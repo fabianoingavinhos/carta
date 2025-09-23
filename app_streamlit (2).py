@@ -351,33 +351,37 @@ def main():
         with c2:
             logo_cliente = st.file_uploader("Carregar logo (cliente)", type=["png","jpg","jpeg"])
             logo_bytes = logo_cliente.read() if logo_cliente else None
-        with c3: 
+        with c3:
         new_preco = st.number_input(
-            "Preço", 
-            min_value=0.0, 
-            value=0.0, 
-            step=0.01, 
+            "Preço",
+            min_value=0.0,
+            value=0.0,
+            step=0.01,
             key="cadastro_preco"
         )
-        with c4: 
-            new_fat = st.number_input(
-                "Fator", 
-                min_value=0.0, 
-                value=float(fator_global), 
-                step=0.1, 
-                key="cadastro_fator"
-            )
-        with c5: 
-            new_pv = st.number_input(
-                "Preço Venda", 
-                min_value=0.0, 
-                value=0.0, 
-                step=0.01, 
-                key="cadastro_preco_venda"
-            )
-        with c6: new_pais = st.text_input("País")
-        with c7: new_regiao = st.text_input("Região")
-        if st.button("Cadastrar"):
+    with c4:
+        new_fat = st.number_input(
+            "Fator",
+            min_value=0.0,
+            value=float(fator_global),
+            step=0.1,
+            key="cadastro_fator"
+        )
+    with c5:
+        new_pv = st.number_input(
+            "Preço Venda",
+            min_value=0.0,
+            value=0.0,
+            step=0.01,
+            key="cadastro_preco_venda"
+        )
+    with c6:
+        new_pais = st.text_input("País")
+    with c7:
+        new_regiao = st.text_input("Região")
+
+    if st.button("Cadastrar"):
+
 
             try:
                 cod_int = int(float(new_cod)) if new_cod else None

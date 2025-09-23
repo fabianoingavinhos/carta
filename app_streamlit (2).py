@@ -3,13 +3,14 @@
 # -*- coding: utf-8 -*-
 
 """
-app_streamlit_final_v3_persist2.py
+app_streamlit_final_v3_persist3.py
 
-Novidades:
-- "Sugestões Salvas": ao selecionar uma sugestão, ela é CARREGADA automaticamente,
-  a relação de itens aparece abaixo e você pode incluir novos itens e salvar MESCLANDO.
-- "Preço de venda" agora é garantido: preco_de_venda = preco_base * fator
-  com parsing robusto (vírgula decimal) e fator zerado/NaN substituído pelo fator global.
+Adições/Correções:
+- ✅ "Salvar alterações nesta sugestão (mesclar)" funcionando (usa seleção atual e mescla com o arquivo).
+- ✅ Filtros avançados para TODAS as colunas: operadores =, <>, contém, não contém; e para números >, <, >=, <=.
+- ✅ Ordenação multi-nível (asc/desc) em QUALQUER coluna.
+- ✅ Persistência de seleção ao trocar filtros.
+- ✅ preco_de_venda = preco_base * fator com parsing robusto.
 """
 
 import os
@@ -57,7 +58,6 @@ def parse_money_series(s, default=0.0):
 def to_float_series(s, default=0.0):
     if pd.api.types.is_numeric_dtype(s):
         return pd.to_numeric(s, errors="coerce").fillna(default)
-    # tenta parse "1.234,56" também
     try:
         return parse_money_series(s, default=default)
     except Exception:
@@ -114,15 +114,12 @@ def get_imagem_file(cod: str):
     return None
 
 def atualiza_coluna_preco_base(df: pd.DataFrame, flag: str, fator_global: float):
-    # define preco_base pela flag escolhida
     base = df[flag] if flag in df.columns else df.get("preco1", 0.0)
     df["preco_base"] = to_float_series(base, default=0.0)
-    # fator: se NaN/<=0, usa fator_global
     if "fator" not in df.columns:
         df["fator"] = fator_global
     df["fator"] = to_float_series(df["fator"], default=fator_global)
     df["fator"] = df["fator"].apply(lambda x: fator_global if pd.isna(x) or x <= 0 else x)
-    # preco_de_venda = preco_base * fator
     df["preco_de_venda"] = (df["preco_base"].astype(float) * df["fator"].astype(float)).astype(float)
     return df
 
@@ -146,169 +143,99 @@ def ordenar_para_saida(df):
     cols_exist = [c for c in ["__tipo_ordem","pais","descricao"] if c in df2.columns]
     return df2.sort_values(cols_exist).drop(columns=["__tipo_ordem"], errors="ignore")
 
-def add_pdf_footer(c, contagem, total_rotulos, fator_geral):
-    from reportlab.lib.pagesizes import A4
-    width, height = A4
-    y_rodape = 35
-    now = datetime.now().strftime("%d/%m/%Y %H:%M")
-    c.setLineWidth(0.4)
-    c.line(30, y_rodape+32, width-30, y_rodape+32)
-    c.setFont("Helvetica", 5)
-    c.drawString(32, y_rodape+20, f"Gerado em: {now}")
-    try:
-        fator_str = f"{float(fator_geral):.2f}"
-    except Exception:
-        fator_str = str(fator_geral)
-    c.setFont("Helvetica-Bold", 6)
-    c.drawString(32, y_rodape+7,
-        f"Brancos: {contagem.get('Brancos',0)} | Tintos: {contagem.get('Tintos',0)} | "
-        f"Rosés: {contagem.get('Rosés',0)} | Espumantes: {contagem.get('Espumantes',0)} | "
-        f"Total: {int(total_rotulos)} | Fator: {fator_str}")
-    c.setFont("Helvetica", 5)
-    c.drawString(32, y_rodape-5, "Ingá Distribuidora Ltda | CNPJ 05.390.477/0002-25 Rod BR 232, KM 18,5 - S/N- Manassu - CEP 54130-340 Jaboatão")
-    c.setFont("Helvetica-Bold", 6)
-    c.drawString(width-190, y_rodape-5, "b2b.ingavinhos.com.br")
+# ============== Filtros Avançados e Ordenação ==============
+def init_rule_states():
+    if "filter_rules" not in st.session_state:
+        st.session_state.filter_rules = []  # lista de dicts: {"col":..., "op":..., "val":...}
+    if "sort_rules" not in st.session_state:
+        st.session_state.sort_rules = []    # lista de dicts: {"col":..., "dir": "asc"/"desc"}
 
-def gerar_pdf(df, titulo, cliente, inserir_foto, logo_cliente_bytes=None):
-    from reportlab.lib.pagesizes import A4
-    buffer = io.BytesIO()
-    c = canvas.Canvas(buffer, pagesize=A4)
-    width, height = A4
+def add_filter_rule(col, op, val):
+    if col and op:
+        st.session_state.filter_rules.append({"col": col, "op": op, "val": val})
 
-    if logo_cliente_bytes:
+def remove_filter_rule(idx):
+    if 0 <= idx < len(st.session_state.filter_rules):
+        st.session_state.filter_rules.pop(idx)
+
+def clear_filter_rules():
+    st.session_state.filter_rules = []
+
+def add_sort_rule(col, direction):
+    if col and direction:
+        st.session_state.sort_rules.append({"col": col, "dir": direction})
+
+def remove_sort_rule(idx):
+    if 0 <= idx < len(st.session_state.sort_rules):
+        st.session_state.sort_rules.pop(idx)
+
+def clear_sort_rules():
+    st.session_state.sort_rules = []
+
+def apply_filter_rules(df):
+    if not st.session_state.filter_rules:
+        return df
+    mask = pd.Series(True, index=df.index)
+    for rule in st.session_state.filter_rules:
+        col = rule["col"]
+        op = rule["op"]
+        val = rule["val"]
+        if col not in df.columns:
+            continue
+        series = df[col]
+
+        # tenta numérico
+        as_num = pd.to_numeric(series, errors="coerce")
+        val_num = pd.to_numeric(pd.Series([val]), errors="coerce").iloc[0]
+
+        if op in ("contém", "não contém", "=", "<>"):
+            series_str = series.astype(str).str.lower()
+            val_str = str(val).lower()
+            if op == "contém":
+                cond = series_str.str.contains(val_str, na=False)
+            elif op == "não contém":
+                cond = ~series_str.str.contains(val_str, na=False)
+            elif op == "=":
+                cond = series_str.fillna("") == val_str
+            elif op == "<>":
+                cond = series_str.fillna("") != val_str
+        else:
+            # operadores numéricos: >, <, >=, <=
+            if op == ">":
+                cond = as_num > val_num
+            elif op == "<":
+                cond = as_num < val_num
+            elif op == ">=":
+                cond = as_num >= val_num
+            elif op == "<=":
+                cond = as_num <= val_num
+            else:
+                cond = pd.Series(True, index=df.index)
+
+        mask &= cond.fillna(False)
+    return df[mask]
+
+def apply_sort_rules(df):
+    if not st.session_state.sort_rules:
+        return df
+    cols = [r["col"] for r in st.session_state.sort_rules if r["col"] in df.columns]
+    if not cols:
+        return df
+    asc = [True if r["dir"] == "asc" else False for r in st.session_state.sort_rules if r["col"] in df.columns]
+    # para estabilidade, converte colunas numéricas quando possível
+    sort_df = df.copy()
+    for c in cols:
         try:
-            c.drawImage(ImageReader(io.BytesIO(logo_cliente_bytes)), 40, height-60, width=120, height=40, mask='auto')
+            sort_df[c] = pd.to_numeric(sort_df[c], errors="ignore")
         except Exception:
             pass
-    if os.path.exists(LOGO_PADRAO):
-        try:
-            c.drawImage(LOGO_PADRAO, width-80, height-40, width=48, height=24, mask='auto')
-        except Exception:
-            pass
-
-    x_texto = 90
-    y = height - 40
-    c.setFont("Helvetica-Bold", 16)
-    c.drawCentredString(width/2, y, titulo)
-    y -= 20
-    if cliente:
-        c.setFont("Helvetica", 10)
-        c.drawCentredString(width/2, y, f"Cliente: {cliente}")
-        y -= 20
-
-    ordem_geral = 1
-    contagem = {'Brancos':0, 'Tintos':0, 'Rosés':0, 'Espumantes':0, 'outros':0}
-    df_sorted = ordenar_para_saida(df)
-
-    for tipo in df_sorted['tipo'].fillna("").astype(str).unique():
-        c.setFont("Helvetica-Bold", 10)
-        c.drawString(x_texto, y, str(tipo).upper()); y -= 14
-        for pais in df_sorted[df_sorted['tipo']==tipo]['pais'].dropna().unique():
-            c.setFont("Helvetica-Bold", 8)
-            c.drawString(x_texto, y, str(pais).upper()); y -= 12
-            grupo = df_sorted[(df_sorted['tipo']==tipo) & (df_sorted['pais']==pais)]
-            for _, row in grupo.iterrows():
-                t = str(tipo).lower()
-                if "branc" in t: contagem["Brancos"] += 1
-                elif "tint" in t: contagem["Tintos"] += 1
-                elif "ros" in t: contagem["Rosés"] += 1
-                elif "espum" in t: contagem["Espumantes"] += 1
-                else: contagem["outros"] += 1
-
-                c.setFont("Helvetica", 6)
-                try: codtxt = f"{int(row['cod'])}"
-                except Exception: codtxt = str(row.get('cod',""))
-                c.drawString(x_texto, y, f"{ordem_geral:02d} ({codtxt})")
-                c.setFont("Helvetica-Bold", 7)
-                c.drawString(x_texto+55, y, str(row['descricao']))
-                uvas = [str(row.get(f"uva{i}", "")).strip() for i in range(1,4)]
-                uvas = [u for u in uvas if u and u.lower() != "nan"]
-                regiao_str = f"{row.get('pais','')} | {row.get('regiao','')}"
-                if uvas: regiao_str += f" | {', '.join(uvas)}"
-                c.setFont("Helvetica", 5); c.drawString(x_texto+55, y-10, regiao_str)
-
-                amad = str(row.get("amadurecimento", ""))
-                if amad and amad.lower() != "nan":
-                    c.setFont("Helvetica", 7); c.drawString(220, y-7, "🛢️")
-
-                c.setFont("Helvetica", 5)
-                try: c.drawRightString(width-120, y, f"(R$ {float(row['preco_base']):.2f})")
-                except Exception: c.drawRightString(width-120, y, "(R$ -)")
-                c.setFont("Helvetica-Bold", 7)
-                try: c.drawRightString(width-40, y, f"R$ {float(row['preco_de_venda']):.2f}")
-                except Exception: c.drawRightString(width-40, y, "R$ -")
-
-                if inserir_foto:
-                    imgfile = get_imagem_file(str(row.get('cod','')))
-                    if imgfile:
-                        try:
-                            c.drawImage(imgfile, x_texto+340, y-2, width=40, height=30, mask='auto'); y -= 28
-                        except Exception: y -= 20
-                    else:
-                        y -= 20
-                else:
-                    y -= 20
-
-                ordem_geral += 1
-
-                if y < 100:
-                    add_pdf_footer(c, contagem, ordem_geral-1, fator_geral=df.get('fator', pd.Series([0])).median())
-                    c.showPage()
-                    y = height - 40
-                    if logo_cliente_bytes:
-                        try: c.drawImage(ImageReader(io.BytesIO(logo_cliente_bytes)), 40, height-60, width=120, height=40, mask='auto')
-                        except Exception: pass
-                    if os.path.exists(LOGO_PADRAO):
-                        try: c.drawImage(LOGO_PADRAO, width-80, height-40, width=48, height=24, mask='auto')
-                        except Exception: pass
-                    c.setFont("Helvetica-Bold", 16); c.drawCentredString(width/2, y, titulo); y -= 20
-                    if cliente: c.setFont("Helvetica", 10); c.drawCentredString(width/2, y, f"Cliente: {cliente}"); y -= 20
-
-    add_pdf_footer(c, contagem, ordem_geral-1, fator_geral=df.get('fator', pd.Series([0])).median())
-    c.save(); buffer.seek(0)
-    return buffer
-
-def exportar_excel_like_pdf(df, inserir_foto=True):
-    wb = openpyxl.Workbook(); ws = wb.active; ws.title = "Sugestão"
-    row_num = 1; ordem_geral = 1
-    df_sorted = ordenar_para_saida(df)
-    for tipo in df_sorted['tipo'].fillna("").unique():
-        ws.merge_cells(start_row=row_num, start_column=1, end_row=row_num, end_column=8)
-        cell = ws.cell(row=row_num, column=1, value=str(tipo).upper()); cell.font = Font(bold=True, size=18); row_num += 1
-        for pais in df_sorted[df_sorted['tipo'] == tipo]['pais'].dropna().unique():
-            ws.merge_cells(start_row=row_num, start_column=1, end_row=row_num, end_column=8)
-            cell = ws.cell(row=row_num, column=1, value=str(pais).upper()); cell.font = Font(bold=True, size=14); row_num += 1
-            grupo = df_sorted[(df_sorted['tipo'] == tipo) & (df_sorted['pais'] == pais)]
-            for _, row in grupo.iterrows():
-                ws.cell(row=row_num, column=1, value=f"{ordem_geral:02d} ({int(row['cod']) if str(row['cod']).isdigit() else ''})").font = Font(size=11)
-                ws.cell(row=row_num, column=2, value=str(row['descricao'])).font = Font(bold=True, size=12)
-                if inserir_foto:
-                    imgfile = get_imagem_file(str(row.get('cod','')))
-                    if imgfile and os.path.exists(imgfile):
-                        try:
-                            img = XLImage(imgfile); img.width, img.height = 32, 24; ws.add_image(img, f"C{row_num}")
-                        except Exception: pass
-                try:
-                    base_val = float(row['preco_base']); pv_val = float(row['preco_de_venda'])
-                    base_str = f"(R$ {base_val:.2f})"; pv_str = f"R$ {pv_val:.2f}"
-                except Exception:
-                    base_str = "(R$ -)"; pv_str = "R$ -"
-                ws.cell(row=row_num, column=7, value=base_str).alignment = Alignment(horizontal='right'); ws.cell(row=row_num, column=7).font = Font(size=10)
-                ws.cell(row=row_num, column=8, value=pv_str).font = Font(bold=True, size=13); ws.cell(row=row_num, column=8).alignment = Alignment(horizontal='right')
-                uvas = [str(row.get(f"uva{i}", "")).strip() for i in range(1,4)]; uvas = [u for u in uvas if u and u.lower() != "nan"]
-                regiao_str = f"{row.get('pais','')} | {row.get('regiao','')}"; 
-                if uvas: regiao_str += f" | {', '.join(uvas)}"
-                ws.cell(row=row_num+1, column=2, value=regiao_str).font = Font(size=10)
-                amad = str(row.get("amadurecimento", ""))
-                if amad and amad.lower() != "nan":
-                    ws.cell(row=row_num+1, column=3, value="🛢️").font = Font(size=10)
-                row_num += 2; ordem_geral += 1
-    stream = io.BytesIO(); wb.save(stream); stream.seek(0); return stream
+    return sort_df.sort_values(by=cols, ascending=asc)
 
 # ===================== APP =====================
 def main():
     st.set_page_config(page_title="Sugestão de Carta de Vinhos", layout="wide")
     garantir_pastas()
+    init_rule_states()
 
     # Estado
     if "selected_idxs" not in st.session_state:
@@ -338,7 +265,7 @@ def main():
                                       ["preco1", "preco2", "preco15", "preco38", "preco39", "preco55", "preco63"],
                                       index=0, key="preco_flag")
         with c5:
-            termo_global = st.text_input("Buscar", value="", key="termo_global")
+            termo_global = st.text_input("Buscar (contém em qualquer coluna)", value="", key="termo_global")
         with c6:
             fator_global = st.number_input("Fator", min_value=0.0, value=2.0, step=0.1, key="fator_global_input")
         with c7:
@@ -361,25 +288,81 @@ def main():
         cad_df["idx"] = pd.to_numeric(cad_df["idx"], errors="coerce").fillna(-1).astype(int)
         df = pd.concat([df, cad_df[df.columns]], ignore_index=True)
 
-    # Sidebar de filtros
-    st.sidebar.header("Filtros")
-    pais_opc = [""] + sorted([p for p in df["pais"].dropna().astype(str).unique().tolist() if p])
-    tipo_opc = [""] + sorted([t for t in df["tipo"].dropna().astype(str).unique().tolist() if t])
-    desc_opc = [""] + sorted([d for d in df["descricao"].dropna().astype(str).unique().tolist() if d])
-    regiao_opc = [""] + sorted([r for r in df["regiao"].dropna().astype(str).unique().tolist() if r])
-    cod_opc = [""] + sorted([str(c) for c in df["cod"].dropna().astype(str).unique().tolist()])
+    # Sidebar de filtros simples
+    st.sidebar.header("Filtros rápidos")
+    def options_from(col):
+        if col not in df.columns: return [""]
+        return [""] + sorted([x for x in df[col].dropna().astype(str).unique().tolist() if x])
 
-    filt_pais = st.sidebar.selectbox("País", pais_opc, index=0, key="filt_pais")
-    filt_tipo = st.sidebar.selectbox("Tipo", tipo_opc, index=0, key="filt_tipo")
-    filt_desc = st.sidebar.selectbox("Descrição", desc_opc, index=0, key="filt_desc")
-    filt_regiao = st.sidebar.selectbox("Região", regiao_opc, index=0, key="filt_regiao")
-    filt_cod = st.sidebar.selectbox("Código", cod_opc, index=0, key="filt_cod")
+    filt_pais  = st.sidebar.selectbox("País", options_from("pais"), index=0, key="filt_pais")
+    filt_tipo  = st.sidebar.selectbox("Tipo", options_from("tipo"), index=0, key="filt_tipo")
+    filt_desc  = st.sidebar.selectbox("Descrição", options_from("descricao"), index=0, key="filt_desc")
+    filt_regiao= st.sidebar.selectbox("Região", options_from("regiao"), index=0, key="filt_regiao")
+    filt_cod   = st.sidebar.selectbox("Código", options_from("cod"), index=0, key="filt_cod")
 
     colp1, colp2 = st.sidebar.columns(2)
     with colp1:
         preco_min = st.number_input("Preço mín (base)", min_value=0.0, value=0.0, step=1.0, key="preco_min")
     with colp2:
         preco_max = st.number_input("Preço máx (base)", min_value=0.0, value=0.0, step=1.0, help="0 = sem limite", key="preco_max")
+
+    # Filtros Avançados
+    with st.sidebar.expander("Filtros avançados (todas as colunas)", expanded=False):
+        cols = df.columns.tolist()
+        fc1, fc2, fc3 = st.columns([1.1,0.9,1.2])
+        with fc1:
+            col_sel = st.selectbox("Coluna", cols, key="adv_col")
+        with fc2:
+            # operadores gerais
+            ops = ["=", "<>", "contém", "não contém", ">", "<", ">=", "<="]
+            op_sel = st.selectbox("Operador", ops, index=2, key="adv_op")
+        with fc3:
+            val_sel = st.text_input("Valor", value="", key="adv_val")
+
+        add_r, clear_r = st.columns([1,1])
+        with add_r:
+            if st.button("Adicionar regra", key="btn_add_rule"):
+                add_filter_rule(col_sel, op_sel, val_sel)
+        with clear_r:
+            if st.button("Limpar regras", key="btn_clear_rules"):
+                clear_filter_rules()
+
+        if st.session_state.filter_rules:
+            st.caption("Regras ativas:")
+            for i, r in enumerate(st.session_state.filter_rules):
+                c1, c2, c3, c4 = st.columns([1.2,0.8,1.2,0.6])
+                c1.write(f"**{r['col']}**")
+                c2.write(r["op"])
+                c3.write(str(r["val"]))
+                if c4.button("Remover", key=f"rm_rule_{i}"):
+                    remove_filter_rule(i)
+                    st.experimental_rerun()
+
+    # Ordenação Avançada
+    with st.sidebar.expander("Ordenação (todas as colunas)", expanded=False):
+        cols = df.columns.tolist()
+        sc1, sc2 = st.columns([1.2,0.8])
+        with sc1:
+            sort_col = st.selectbox("Coluna", cols, key="sort_col")
+        with sc2:
+            sort_dir = st.selectbox("Direção", ["asc", "desc"], index=0, key="sort_dir")
+        sbtn1, sbtn2 = st.columns([1,1])
+        with sbtn1:
+            if st.button("Adicionar ordenação", key="btn_add_sort"):
+                add_sort_rule(sort_col, sort_dir)
+        with sbtn2:
+            if st.button("Limpar ordenações", key="btn_clear_sort"):
+                clear_sort_rules()
+
+        if st.session_state.sort_rules:
+            st.caption("Ordenações ativas:")
+            for i, r in enumerate(st.session_state.sort_rules):
+                c1, c2, c3 = st.columns([1.2,0.8,0.6])
+                c1.write(f"**{r['col']}**")
+                c2.write("ascendente" if r["dir"]=="asc" else "descendente")
+                if c3.button("Remover", key=f"rm_sort_{i}"):
+                    remove_sort_rule(i)
+                    st.experimental_rerun()
 
     # Aplicar filtros (VIEW)
     df_filtrado = df.copy()
@@ -402,8 +385,15 @@ def main():
     if preco_max and preco_max > 0:
         df_filtrado = df_filtrado[df_filtrado["preco_base"].fillna(0) <= float(preco_max)]
 
+    # Filtros avançados
+    df_filtrado = apply_filter_rules(df_filtrado)
+    # Ordenações avançadas
+    df_filtrado = apply_sort_rules(df_filtrado)
+
     if resetar:
         df_filtrado = df.copy()
+        clear_filter_rules()
+        clear_sort_rules()
 
     # Contagem por tipo + status seleção
     contagem = {'Brancos': 0, 'Tintos': 0, 'Rosés': 0, 'Espumantes': 0, 'outros': 0}
@@ -510,7 +500,6 @@ def main():
 
     for idx, fat in st.session_state.manual_fat.items():
         df.loc[df["idx"]==idx, "fator"] = float(fat)
-    # caso fator <=0, usa fator_global
     df["fator"] = to_float_series(df["fator"], default=float(fator_global))
     df["fator"] = df["fator"].apply(lambda x: float(fator_global) if pd.isna(x) or x <= 0 else float(x))
 
@@ -653,9 +642,9 @@ def main():
                     st.error(f"Erro ao carregar '{sel}': {e}")
 
         # Relação da sugestão (abaixo da seleção)
-        if sugestao_indices:
+        if sel:
             st.subheader("Relação da Sugestão")
-            df_rel = df[df["idx"].isin(sugestao_indices)].copy()
+            df_rel = df[df["idx"].isin(st.session_state.selected_idxs)].copy()
             if not df_rel.empty:
                 df_rel = df_rel[["cod","descricao","pais","regiao","preco_base","fator","preco_de_venda"]].sort_values(["pais","descricao"])
                 st.dataframe(df_rel, use_container_width=True, height=min(500, 50 + 28*len(df_rel)))
@@ -677,6 +666,7 @@ def main():
         with coly:
             if st.button("Salvar alterações nesta sugestão (mesclar)", key="btn_merge_sug"):
                 if sel:
+                    garantir_pastas()
                     path = os.path.join(SUGESTOES_DIR, f"{sel}.txt")
                     try:
                         old = []
@@ -718,7 +708,6 @@ def main():
             try:
                 cod_int = int(float(new_cod)) if new_cod else None
                 pv_calc = new_pv if new_pv > 0 else new_preco * new_fat
-                # idx único baseado no maior existente
                 idx_next = 0
                 if "idx" in df.columns and not df["idx"].isna().all():
                     try:

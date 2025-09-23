@@ -3,13 +3,14 @@
 # -*- coding: utf-8 -*-
 
 """
-app_streamlit_final_v3_persist6.py
+app_streamlit_final_v3_persist3.py
 
-Alterações solicitadas:
-- Filtros **Tipo**, **País** e **Região** agora são SOMENTE `st.multiselect`
-  (remoção de expanders e UI incremental).
-- Mantém: filtros/ordenações avançadas, persistência de seleção de itens,
-  mesclagem de sugestões e cálculo robusto do preço de venda.
+Adições/Correções:
+- ✅ "Salvar alterações nesta sugestão (mesclar)" funcionando (usa seleção atual e mescla com o arquivo).
+- ✅ Filtros avançados para TODAS as colunas: operadores =, <>, contém, não contém; e para números >, <, >=, <=.
+- ✅ Ordenação multi-nível (asc/desc) em QUALQUER coluna.
+- ✅ Persistência de seleção ao trocar filtros.
+- ✅ preco_de_venda = preco_base * fator com parsing robusto.
 """
 
 import os
@@ -49,6 +50,7 @@ def garantir_pastas():
         os.makedirs(p, exist_ok=True)
 
 def parse_money_series(s, default=0.0):
+    """Converte série textual com possível separador de milhar '.' e decimal ',' em float."""
     s = s.astype(str).str.replace("\u00A0", "", regex=False).str.strip()
     s = s.str.replace(".", "", regex=False).str.replace(",", ".", regex=False)
     return pd.to_numeric(s, errors="coerce").fillna(default)
@@ -78,14 +80,17 @@ def ler_excel_vinhos(caminho="vinhos1.xls"):
     df.columns = [c.strip().lower() for c in df.columns]
     if "idx" not in df.columns or df["idx"].isna().all():
         df = df.reset_index(drop=False).rename(columns={"index": "idx"})
+    # normaliza tipos
     df["idx"] = pd.to_numeric(df["idx"], errors="coerce").fillna(-1).astype(int)
 
+    # preços e fator: aceitar vírgula
     for col in ["preco38","preco39","preco1","preco2","preco15","preco55","preco63","preco_base","fator","preco_de_venda"]:
         if col not in df.columns:
             df[col] = 0.0
         else:
             df[col] = to_float_series(df[col], default=0.0)
 
+    # textos
     for col in ["cod","descricao","pais","regiao","tipo","uva1","uva2","uva3","amadurecimento","vinicola","corpo","visual","olfato","gustativo","premiacoes"]:
         if col not in df.columns:
             df[col] = ""
@@ -141,16 +146,9 @@ def ordenar_para_saida(df):
 # ============== Filtros Avançados e Ordenação ==============
 def init_rule_states():
     if "filter_rules" not in st.session_state:
-        st.session_state.filter_rules = []
+        st.session_state.filter_rules = []  # lista de dicts: {"col":..., "op":..., "val":...}
     if "sort_rules" not in st.session_state:
-        st.session_state.sort_rules = []
-    # Multiselect states
-    for k in ["filt_tipos", "filt_paises", "filt_regioes"]:
-        if k not in st.session_state:
-            st.session_state[k] = []
-    for k in ["ms_tipos", "ms_paises", "ms_regioes"]:
-        if k not in st.session_state:
-            st.session_state[k] = []
+        st.session_state.sort_rules = []    # lista de dicts: {"col":..., "dir": "asc"/"desc"}
 
 def add_filter_rule(col, op, val):
     if col and op:
@@ -185,6 +183,8 @@ def apply_filter_rules(df):
         if col not in df.columns:
             continue
         series = df[col]
+
+        # tenta numérico
         as_num = pd.to_numeric(series, errors="coerce")
         val_num = pd.to_numeric(pd.Series([val]), errors="coerce").iloc[0]
 
@@ -200,6 +200,7 @@ def apply_filter_rules(df):
             elif op == "<>":
                 cond = series_str.fillna("") != val_str
         else:
+            # operadores numéricos: >, <, >=, <=
             if op == ">":
                 cond = as_num > val_num
             elif op == "<":
@@ -221,6 +222,7 @@ def apply_sort_rules(df):
     if not cols:
         return df
     asc = [True if r["dir"] == "asc" else False for r in st.session_state.sort_rules if r["col"] in df.columns]
+    # para estabilidade, converte colunas numéricas quando possível
     sort_df = df.copy()
     for c in cols:
         try:
@@ -286,32 +288,17 @@ def main():
         cad_df["idx"] = pd.to_numeric(cad_df["idx"], errors="coerce").fillna(-1).astype(int)
         df = pd.concat([df, cad_df[df.columns]], ignore_index=True)
 
-    # Sidebar: Filtros rápidos
+    # Sidebar de filtros simples
     st.sidebar.header("Filtros rápidos")
-
     def options_from(col):
-        if col not in df.columns: return []
-        return sorted([x for x in df[col].dropna().astype(str).unique().tolist() if x])
+        if col not in df.columns: return [""]
+        return [""] + sorted([x for x in df[col].dropna().astype(str).unique().tolist() if x])
 
-    # ====== MultiSelects (Tipo, País, Região) ======
-    tipo_opc = options_from("tipo")
-    pais_opc = options_from("pais")
-    regiao_opc = options_from("regiao")
-
-    st.session_state.ms_tipos = st.sidebar.multiselect("Tipos", tipo_opc, default=st.session_state.get("filt_tipos", []), key="ms_tipos")
-    st.session_state.ms_paises = st.sidebar.multiselect("Países", pais_opc, default=st.session_state.get("filt_paises", []), key="ms_paises")
-    st.session_state.ms_regioes = st.sidebar.multiselect("Regiões", regiao_opc, default=st.session_state.get("filt_regioes", []), key="ms_regioes")
-
-    # Sincroniza com listas persistidas
-    st.session_state.filt_tipos = list(st.session_state.ms_tipos)
-    st.session_state.filt_paises = list(st.session_state.ms_paises)
-    st.session_state.filt_regioes = list(st.session_state.ms_regioes)
-
-    # Descrição e Código (simples)
-    desc_opc = [""] + options_from("descricao")
-    cod_opc = [""] + options_from("cod")
-    filt_desc = st.sidebar.selectbox("Descrição (igual a)", desc_opc, index=0, key="filt_desc")
-    filt_cod  = st.sidebar.selectbox("Código (igual a)", cod_opc, index=0, key="filt_cod")
+    filt_pais  = st.sidebar.selectbox("País", options_from("pais"), index=0, key="filt_pais")
+    filt_tipo  = st.sidebar.selectbox("Tipo", options_from("tipo"), index=0, key="filt_tipo")
+    filt_desc  = st.sidebar.selectbox("Descrição", options_from("descricao"), index=0, key="filt_desc")
+    filt_regiao= st.sidebar.selectbox("Região", options_from("regiao"), index=0, key="filt_regiao")
+    filt_cod   = st.sidebar.selectbox("Código", options_from("cod"), index=0, key="filt_cod")
 
     colp1, colp2 = st.sidebar.columns(2)
     with colp1:
@@ -326,6 +313,7 @@ def main():
         with fc1:
             col_sel = st.selectbox("Coluna", cols, key="adv_col")
         with fc2:
+            # operadores gerais
             ops = ["=", "<>", "contém", "não contém", ">", "<", ">=", "<="]
             op_sel = st.selectbox("Operador", ops, index=2, key="adv_op")
         with fc3:
@@ -350,7 +338,7 @@ def main():
                     remove_filter_rule(i)
                     st.experimental_rerun()
 
-    # Ordenação
+    # Ordenação Avançada
     with st.sidebar.expander("Ordenação (todas as colunas)", expanded=False):
         cols = df.columns.tolist()
         sc1, sc2 = st.columns([1.2,0.8])
@@ -382,20 +370,14 @@ def main():
         term = termo_global.strip().lower()
         mask = df_filtrado.apply(lambda row: term in " ".join(str(v).lower() for v in row.values), axis=1)
         df_filtrado = df_filtrado[mask]
-
-    # TIPOS (multi)
-    if st.session_state.filt_tipos:
-        df_filtrado = df_filtrado[df_filtrado["tipo"].astype(str).isin(st.session_state.filt_tipos)]
-    # PAÍSES (multi)
-    if st.session_state.filt_paises:
-        df_filtrado = df_filtrado[df_filtrado["pais"].astype(str).isin(st.session_state.filt_paises)]
-    # REGIÕES (multi)
-    if st.session_state.filt_regioes:
-        df_filtrado = df_filtrado[df_filtrado["regiao"].astype(str).isin(st.session_state.filt_regioes)]
-
-    # Descrição e Código (simples)
+    if filt_pais:
+        df_filtrado = df_filtrado[df_filtrado["pais"] == filt_pais]
+    if filt_tipo:
+        df_filtrado = df_filtrado[df_filtrado["tipo"] == filt_tipo]
     if filt_desc:
         df_filtrado = df_filtrado[df_filtrado["descricao"] == filt_desc]
+    if filt_regiao:
+        df_filtrado = df_filtrado[df_filtrado["regiao"] == filt_regiao]
     if filt_cod:
         df_filtrado = df_filtrado[df_filtrado["cod"].astype(str) == filt_cod]
     if preco_min:
@@ -403,18 +385,15 @@ def main():
     if preco_max and preco_max > 0:
         df_filtrado = df_filtrado[df_filtrado["preco_base"].fillna(0) <= float(preco_max)]
 
-    # Filtros/Ordenações avançadas
+    # Filtros avançados
     df_filtrado = apply_filter_rules(df_filtrado)
+    # Ordenações avançadas
     df_filtrado = apply_sort_rules(df_filtrado)
 
     if resetar:
         df_filtrado = df.copy()
         clear_filter_rules()
         clear_sort_rules()
-        # Limpa multiselects
-        for k in ["filt_tipos","filt_paises","filt_regioes","ms_tipos","ms_paises","ms_regioes"]:
-            st.session_state[k] = []
-        st.experimental_rerun()
 
     # Contagem por tipo + status seleção
     contagem = {'Brancos': 0, 'Tintos': 0, 'Rosés': 0, 'Espumantes': 0, 'outros': 0}
@@ -507,7 +486,7 @@ def main():
     st.session_state.selected_idxs = global_sel
     st.session_state.prev_view_state = curr_state
 
-    # Ajustes manuais + recomputa preco_de_venda
+    # Ajustes manuais (aplicados no DF base, por idx) + recomputa preco_de_venda
     if isinstance(edited, pd.DataFrame) and not edited.empty:
         for _, r in edited.iterrows():
             try:
@@ -649,18 +628,20 @@ def main():
         sel = st.selectbox("Abrir sugestão", [""] + [a[:-4] for a in arquivos], key="sel_sugestao")
 
         # Ao selecionar, carregar automaticamente e mostrar a RELAÇÃO abaixo
+        sugestao_indices = []
         if sel:
             path = os.path.join(SUGESTOES_DIR, f"{sel}.txt")
             if os.path.exists(path):
                 try:
                     with open(path) as f:
                         sugestao_indices = [int(x) for x in f.read().strip().split(",") if x]
+                    # Carrega a sugestão (substitui seleção atual)
                     st.session_state.selected_idxs = set(sugestao_indices)
                     st.info(f"Sugestão '{sel}' carregada: {len(sugestao_indices)} itens.")
                 except Exception as e:
                     st.error(f"Erro ao carregar '{sel}': {e}")
 
-        # Relação da sugestão (abaixo)
+        # Relação da sugestão (abaixo da seleção)
         if sel:
             st.subheader("Relação da Sugestão")
             df_rel = df[df["idx"].isin(st.session_state.selected_idxs)].copy()

@@ -3,24 +3,26 @@
 # -*- coding: utf-8 -*-
 
 """
-app_streamlit.py
-Conversão da aplicação Tkinter para Streamlit mantendo:
+app_streamlit_final.py
+Versão consolidada e corrigida da app (Streamlit) espelhando o Tkinter.
+
+Mantém:
 - Filtros (global, país, tipo, região, código, preço min/máx)
 - Escolha de tabela de preços (preco1, preco2, preco15, preco38, preco39, preco55, preco63)
 - Fator global e ajustes manuais por item (fator e preço de venda)
-- Seleção de itens (marcar/desmarcar; marcar tudo/desmarcar tudo dos filtrados)
-- Geração de PDF (layout com logo Ingá no topo direito + logo do cliente opcional + fotos opcionais)
+- Seleção de itens (marcar/desmarcar; visualizar marcados)
+- Geração de PDF (logo Ingá no topo direito sempre + logo de cliente opcional + fotos opcionais)
 - Exportação Excel com layout semelhante ao PDF
-- Salvar/Carregar sugestões (lista de índices selecionados) em /sugestoes/*.txt
+- Salvar/Carregar sugestões (índices) em /sugestoes/*.txt
+- Cadastro de vinhos (na sessão)
 
 Pastas esperadas (iguais ao Tkinter):
 - imagens/           (fotos dos produtos, nomeadas por código: 407.png, 123.jpg etc)
 - CARTA/logo_inga.png
 - sugestoes/
 
-Observações:
-- Se for ler .xls você precisa ter xlrd instalado (pip install xlrd>=2.0.1)
-- Para .xlsx é usado openpyxl
+Notas:
+- Para .xls, instale xlrd>=2.0.1; para .xlsx, usa openpyxl.
 """
 
 import os
@@ -56,14 +58,14 @@ CAMPOS_NOVOS = [
     "preco38", "preco39", "preco1", "preco2", "preco15", "preco55", "preco63"
 ]
 
-# --- Utilitários ---
+TIPO_ORDEM_FIXA = [
+    "Espumantes", "Brancos", "Rosés", "Tintos",
+    "Frisantes", "Fortificados", "Vinhos de sobremesa", "Licorosos"
+]
+
 def garantir_pastas():
     for p in (IMAGEM_DIR, SUGESTOES_DIR, CARTA_DIR):
-        if not os.path.isdir(p):
-            try:
-                os.makedirs(p, exist_ok=True)
-            except Exception:
-                pass
+        os.makedirs(p, exist_ok=True)
 
 def ler_excel_vinhos(caminho="vinhos1.xls"):
     # Aceita .xls (xlrd) e .xlsx (openpyxl)
@@ -75,6 +77,10 @@ def ler_excel_vinhos(caminho="vinhos1.xls"):
         engine = "openpyxl"
     try:
         df = pd.read_excel(caminho, engine=engine)
+    except ImportError as e:
+        st.error("Para ler arquivos .xls, instale xlrd>=2.0.1. "
+                 "Se possível, converta seu arquivo para .xlsx (openpyxl).")
+        raise
     except Exception:
         # Tenta sem engine como fallback
         df = pd.read_excel(caminho)
@@ -89,7 +95,7 @@ def ler_excel_vinhos(caminho="vinhos1.xls"):
     return df
 
 def get_imagem_file(cod: str):
-    # Compatibilidade com C:\carta\imagens\cod.png
+    # Compatibilidade com caminho Windows
     caminho_win = os.path.join(r"C:/carta/imagens", f"{cod}.png")
     if os.path.exists(caminho_win):
         return caminho_win
@@ -120,12 +126,58 @@ def atualiza_coluna_preco_base(df: pd.DataFrame, flag: str):
     return df
 
 def ordenar_para_saida(df):
-    # Mantém o comportamento do Tkinter: ordena por tipo, pais, descricao.
-    # Caso queira uma ordem fixa posterior, ajuste aqui.
-    cols_exist = [c for c in ["tipo","pais","descricao"] if c in df.columns]
-    if cols_exist:
-        return df.sort_values(cols_exist)
-    return df
+    # Ordena por ordem fixa de tipo, depois país e descrição
+    tipocol = df.get("tipo", pd.Series([""] * len(df))).astype(str)
+    # Normaliza para bater com ordem fixa (capitalização/acentos simples)
+    def normaliza_tipo(t):
+        t = str(t).strip().lower()
+        if "espum" in t: return "Espumantes"
+        if "branc" in t: return "Brancos"
+        if "ros" in t: return "Rosés"
+        if "tint" in t: return "Tintos"
+        if "fris" in t: return "Frisantes"
+        if "forti" in t: return "Fortificados"
+        if "sobrem" in t: return "Vinhos de sobremesa"
+        if "licor" in t: return "Licorosos"
+        return t.title()
+    tipos_norm = tipocol.map(normaliza_tipo)
+    ordem_map = {t: i for i, t in enumerate(TIPO_ORDEM_FIXA)}
+    ordem = tipos_norm.map(lambda x: ordem_map.get(x, 999))
+    df2 = df.copy()
+    df2["__tipo_ordem"] = ordem
+    cols_exist = [c for c in ["__tipo_ordem","pais","descricao"] if c in df2.columns]
+    return df2.sort_values(cols_exist).drop(columns=["__tipo_ordem"], errors="ignore")
+
+def add_pdf_footer(c, contagem, total_rotulos, fator_geral):
+    width, height = A4
+    y_rodape = 35
+    now = datetime.now().strftime("%d/%m/%Y %H:%M")
+    c.setLineWidth(0.4)
+    c.line(30, y_rodape+32, width-30, y_rodape+32)
+    c.setFont("Helvetica", 5)
+    c.drawString(32, y_rodape+20, f"Gerado em: {now}")
+
+    # garante formatação correta do fator
+    if isinstance(fator_geral, (int, float)):
+        fator_str = f"{fator_geral:.2f}"
+    else:
+        try:
+            fator_str = f"{float(fator_geral):.2f}"
+        except Exception:
+            fator_str = str(fator_geral)
+
+    c.setFont("Helvetica-Bold", 6)
+    c.drawString(
+        32,
+        y_rodape+7,
+        f"Brancos: {contagem.get('Brancos',0)} | Tintos: {contagem.get('Tintos',0)} | "
+        f"Rosés: {contagem.get('Rosés',0)} | Espumantes: {contagem.get('Espumantes',0)} | "
+        f"Total: {int(total_rotulos)} | Fator: {fator_str}"
+    )
+    c.setFont("Helvetica", 5)
+    c.drawString(32, y_rodape-5, "Ingá Distribuidora Ltda | CNPJ 05.390.477/0002-25 Rod BR 232, KM 18,5 - S/N- Manassu - CEP 54130-340 Jaboatão")
+    c.setFont("Helvetica-Bold", 6)
+    c.drawString(width-190, y_rodape-5, "b2b.ingavinhos.com.br")
 
 def gerar_pdf(df, titulo, cliente, inserir_foto, logo_cliente_bytes=None):
     buffer = io.BytesIO()
@@ -158,22 +210,35 @@ def gerar_pdf(df, titulo, cliente, inserir_foto, logo_cliente_bytes=None):
 
     ordem_geral = 1
     contagem = {'Brancos':0, 'Tintos':0, 'Rosés':0, 'Espumantes':0, 'outros':0}
-    tipo_map = {'branco':'Brancos', 'tinto':'Tintos', 'rose':'Rosés', 'rosé':'Rosés', 'espumante':'Espumantes'}
 
-    for tipo in df['tipo'].dropna().unique():
-        tipo_label = next((lbl for k,lbl in tipo_map.items() if k in str(tipo).lower()), 'outros')
+    tipos = df['tipo'].fillna("").astype(str).tolist()
+    # Usa ordenação fixa para tipos
+    df_sorted = ordenar_para_saida(df)
+    for tipo in df_sorted['tipo'].fillna("").astype(str).unique():
         c.setFont("Helvetica-Bold", 10)
         c.drawString(x_texto, y, str(tipo).upper())
         y -= 14
-        for pais in df[df['tipo']==tipo]['pais'].dropna().unique():
+        for pais in df_sorted[df_sorted['tipo']==tipo]['pais'].dropna().unique():
             c.setFont("Helvetica-Bold", 8)
             c.drawString(x_texto, y, str(pais).upper())
             y -= 12
-            grupo = df[(df['tipo'] == tipo) & (df['pais'] == pais)]
+            grupo = df_sorted[(df_sorted['tipo'] == tipo) & (df_sorted['pais'] == pais)]
             for _, row in grupo.iterrows():
-                contagem[tipo_label] = contagem.get(tipo_label,0) + 1
+                # contagem por tipo simples
+                t = str(tipo).lower()
+                if "branc" in t: contagem["Brancos"] += 1
+                elif "tint" in t: contagem["Tintos"] += 1
+                elif "ros" in t: contagem["Rosés"] += 1
+                elif "espum" in t: contagem["Espumantes"] += 1
+                else: contagem["outros"] += 1
+
                 c.setFont("Helvetica", 6)
-                c.drawString(x_texto, y, f"{ordem_geral:02d} ({int(row['cod']) if pd.notnull(row['cod']) else ''})")
+                codtxt = ""
+                try:
+                    codtxt = f"{int(row['cod'])}"
+                except Exception:
+                    codtxt = str(row.get('cod',""))
+                c.drawString(x_texto, y, f"{ordem_geral:02d} ({codtxt})")
                 c.setFont("Helvetica-Bold", 7)
                 c.drawString(x_texto+55, y, str(row['descricao']))
                 # linha inferior com regiao/uva
@@ -192,9 +257,15 @@ def gerar_pdf(df, titulo, cliente, inserir_foto, logo_cliente_bytes=None):
 
                 # preços
                 c.setFont("Helvetica", 5)
-                c.drawRightString(width-120, y, f"(R$ {row['preco_base']:.2f})")
-                c.setFont("Helvetica-Bold", 7)
-                c.drawRightString(width-40, y, f"R$ {row['preco_de_venda']:.2f}")
+                try:
+                    c.drawRightString(width-120, y, f"(R$ {float(row['preco_base']):.2f})")
+                except Exception:
+                    c.drawRightString(width-120, y, "(R$ -)")
+                try:
+                    c.setFont("Helvetica-Bold", 7)
+                    c.drawRightString(width-40, y, f"R$ {float(row['preco_de_venda']):.2f}")
+                except Exception:
+                    c.drawRightString(width-40, y, "R$ -")
 
                 # imagem (opcional)
                 if inserir_foto:
@@ -241,35 +312,6 @@ def gerar_pdf(df, titulo, cliente, inserir_foto, logo_cliente_bytes=None):
     buffer.seek(0)
     return buffer
 
-def add_pdf_footer(c, contagem, total_rotulos, fator_geral):
-    width, height = A4
-    y_rodape = 35
-    now = datetime.now().strftime("%d/%m/%Y %H:%M")
-    c.setLineWidth(0.4)
-    c.line(30, y_rodape+32, width-30, y_rodape+32)
-    c.setFont("Helvetica", 5)
-    c.drawString(32, y_rodape+20, f"Gerado em: {now}")
-
-    # garante formatação correta do fator
-    if isinstance(fator_geral, (int, float)):
-        fator_str = f"{fator_geral:.2f}"
-    else:
-        fator_str = str(fator_geral)
-
-    c.setFont("Helvetica-Bold", 6)
-    c.drawString(
-        32,
-        y_rodape+7,
-        f"Brancos: {contagem.get('Brancos',0)} | Tintos: {contagem.get('Tintos',0)} | "
-        f"Rosés: {contagem.get('Rosés',0)} | Espumantes: {contagem.get('Espumantes',0)} | "
-        f"Total: {int(total_rotulos)} | Fator: {fator_str}"
-    )
-    c.setFont("Helvetica", 5)
-    c.drawString(32, y_rodape-5, "Ingá Distribuidora Ltda | CNPJ 05.390.477/0002-25 Rod BR 232, KM 18,5 - S/N- Manassu - CEP 54130-340 Jaboatão")
-    c.setFont("Helvetica-Bold", 6)
-    c.drawString(width-190, y_rodape-5, "b2b.ingavinhos.com.br")
-
-
 def exportar_excel_like_pdf(df, inserir_foto=True):
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -278,19 +320,21 @@ def exportar_excel_like_pdf(df, inserir_foto=True):
     row_num = 1
     ordem_geral = 1
 
-    for tipo in df['tipo'].dropna().unique():
+    df_sorted = ordenar_para_saida(df)
+
+    for tipo in df_sorted['tipo'].fillna("").unique():
         ws.merge_cells(start_row=row_num, start_column=1, end_row=row_num, end_column=8)
         cell = ws.cell(row=row_num, column=1, value=str(tipo).upper())
         cell.font = Font(bold=True, size=18)
         row_num += 1
 
-        for pais in df[df['tipo'] == tipo]['pais'].dropna().unique():
+        for pais in df_sorted[df_sorted['tipo'] == tipo]['pais'].dropna().unique():
             ws.merge_cells(start_row=row_num, start_column=1, end_row=row_num, end_column=8)
             cell = ws.cell(row=row_num, column=1, value=str(pais).upper())
             cell.font = Font(bold=True, size=14)
             row_num += 1
 
-            grupo = df[(df['tipo'] == tipo) & (df['pais'] == pais)]
+            grupo = df_sorted[(df_sorted['tipo'] == tipo) & (df_sorted['pais'] == pais)]
             for _, row in grupo.iterrows():
                 ws.cell(row=row_num, column=1, value=f"{ordem_geral:02d} ({int(row['cod']) if pd.notnull(row['cod']) else ''})").font = Font(size=11)
                 ws.cell(row=row_num, column=2, value=str(row['descricao'])).font = Font(bold=True, size=12)
@@ -306,9 +350,18 @@ def exportar_excel_like_pdf(df, inserir_foto=True):
                         except Exception:
                             pass
 
-                ws.cell(row=row_num, column=7, value=f"(R$ {row['preco_base']:.2f})").alignment = Alignment(horizontal='right')
+                try:
+                    base_val = float(row['preco_base'])
+                    pv_val = float(row['preco_de_venda'])
+                    base_str = f"(R$ {base_val:.2f})"
+                    pv_str = f"R$ {pv_val:.2f}"
+                except Exception:
+                    base_str = "(R$ -)"
+                    pv_str = "R$ -"
+
+                ws.cell(row=row_num, column=7, value=base_str).alignment = Alignment(horizontal='right')
                 ws.cell(row=row_num, column=7).font = Font(size=10)
-                ws.cell(row=row_num, column=8, value=f"R$ {row['preco_de_venda']:.2f}").font = Font(bold=True, size=13)
+                ws.cell(row=row_num, column=8, value=pv_str).font = Font(bold=True, size=13)
                 ws.cell(row=row_num, column=8).alignment = Alignment(horizontal='right')
 
                 uvas = [str(row.get(f"uva{i}", "")).strip() for i in range(1,4)]
@@ -340,73 +393,306 @@ def main():
     st.set_page_config(page_title="Sugestão de Carta de Vinhos", layout="wide")
     garantir_pastas()
 
-    # Barra de título semelhante ao Tkinter
+    # Barra de título
     st.markdown("### Sugestão de Carta de Vinhos")
 
-    # Top bar (nome cliente, logo, inserir foto, tabela de preço, busca global, fator, reset)
+    # Top bar (cliente, logo, foto, tabela, busca, fator, reset, arquivo)
     with st.container():
-        c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([1.4,1.2,1,1,1.6,0.7,0.9,1.2])
+        c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([1.4,1.2,1,1,1.6,0.9,0.9,1.6])
         with c1:
-            cliente = st.text_input("Nome do Cliente", value="", placeholder="(opcional)")
+            cliente = st.text_input("Nome do Cliente", value="", placeholder="(opcional)", key="cliente_nome")
         with c2:
-            logo_cliente = st.file_uploader("Carregar logo (cliente)", type=["png","jpg","jpeg"])
+            logo_cliente = st.file_uploader("Carregar logo (cliente)", type=["png","jpg","jpeg"], key="logo_cliente")
             logo_bytes = logo_cliente.read() if logo_cliente else None
         with c3:
-    new_preco = st.number_input(
-        "Preço",
-        min_value=0.0,
-        value=0.0,
-        step=0.01,
-        key="cadastro_preco"
+            inserir_foto = st.checkbox("Inserir foto no PDF/Excel", value=True, key="chk_foto")
+        with c4:
+            preco_flag = st.selectbox("Tabela de preço",
+                                      ["preco1", "preco2", "preco15", "preco38", "preco39", "preco55", "preco63"],
+                                      index=0, key="preco_flag")
+        with c5:
+            termo_global = st.text_input("Buscar", value="", key="termo_global")
+        with c6:
+            fator_global = st.number_input("Fator", min_value=0.0, value=2.0, step=0.1, key="fator_global_input")
+        with c7:
+            resetar = st.button("Resetar/Mostrar Todos", key="btn_resetar")
+        with c8:
+            caminho_planilha = st.text_input("Arquivo de dados", value="vinhos1.xls",
+                                             help="Caminho do arquivo XLS/XLSX (ex.: vinhos1.xls)",
+                                             key="caminho_planilha")
+
+    # Carregamento dos dados
+    df = ler_excel_vinhos(caminho_planilha)
+    df = atualiza_coluna_preco_base(df, preco_flag)
+
+    # Aplicação do fator global
+    df["fator"] = float(fator_global)
+    df["preco_de_venda"] = df["preco_base"] * df["fator"]
+
+    # Sidebar de filtros
+    st.sidebar.header("Filtros")
+    pais_opc = [""] + sorted([p for p in df["pais"].dropna().astype(str).unique().tolist() if p])
+    tipo_opc = [""] + sorted([t for t in df["tipo"].dropna().astype(str).unique().tolist() if t])
+    desc_opc = [""] + sorted([d for d in df["descricao"].dropna().astype(str).unique().tolist() if d])
+    regiao_opc = [""] + sorted([r for r in df["regiao"].dropna().astype(str).unique().tolist() if r])
+    cod_opc = [""] + sorted([str(c) for c in df["cod"].dropna().astype(str).unique().tolist()])
+
+    filt_pais = st.sidebar.selectbox("País", pais_opc, index=0, key="filt_pais")
+    filt_tipo = st.sidebar.selectbox("Tipo", tipo_opc, index=0, key="filt_tipo")
+    filt_desc = st.sidebar.selectbox("Descrição", desc_opc, index=0, key="filt_desc")
+    filt_regiao = st.sidebar.selectbox("Região", regiao_opc, index=0, key="filt_regiao")
+    filt_cod = st.sidebar.selectbox("Código", cod_opc, index=0, key="filt_cod")
+
+    colp1, colp2 = st.sidebar.columns(2)
+    with colp1:
+        preco_min = st.number_input("Preço mín (base)", min_value=0.0, value=0.0, step=1.0, key="preco_min")
+    with colp2:
+        preco_max = st.number_input("Preço máx (base)", min_value=0.0, value=0.0, step=1.0, help="0 = sem limite", key="preco_max")
+
+    # Estado de seleção
+    if "selected_idxs" not in st.session_state:
+        st.session_state.selected_idxs = set()
+    if "manual_fat" not in st.session_state:
+        st.session_state.manual_fat = {}  # idx -> fator
+    if "manual_preco_venda" not in st.session_state:
+        st.session_state.manual_preco_venda = {}  # idx -> pv
+
+    # Aplicar filtros
+    df_filtrado = df.copy()
+    if termo_global.strip():
+        term = termo_global.strip().lower()
+        mask = df_filtrado.apply(lambda row: term in " ".join(str(v).lower() for v in row.values), axis=1)
+        df_filtrado = df_filtrado[mask]
+    if filt_pais:
+        df_filtrado = df_filtrado[df_filtrado["pais"] == filt_pais]
+    if filt_tipo:
+        df_filtrado = df_filtrado[df_filtrado["tipo"] == filt_tipo]
+    if filt_desc:
+        df_filtrado = df_filtrado[df_filtrado["descricao"] == filt_desc]
+    if filt_regiao:
+        df_filtrado = df_filtrado[df_filtrado["regiao"] == filt_regiao]
+    if filt_cod:
+        df_filtrado = df_filtrado[df_filtrado["cod"].astype(str) == filt_cod]
+    if preco_min:
+        df_filtrado = df_filtrado[df_filtrado["preco_base"] >= float(preco_min)]
+    if preco_max and preco_max > 0:
+        df_filtrado = df_filtrado[df_filtrado["preco_base"] <= float(preco_max)]
+
+    if resetar:
+        st.session_state.selected_idxs = set()
+        df_filtrado = df.copy()
+
+    # Contagem por tipo
+    contagem = {'Brancos': 0, 'Tintos': 0, 'Rosés': 0, 'Espumantes': 0, 'outros': 0}
+    for t, n in df_filtrado.groupby('tipo').size().items():
+        t_low = str(t).lower()
+        if "branc" in t_low: contagem['Brancos'] += int(n)
+        elif "tint" in t_low: contagem['Tintos'] += int(n)
+        elif "ros" in t_low: contagem['Rosés'] += int(n)
+        elif "espum" in t_low: contagem['Espumantes'] += int(n)
+        else: contagem['outros'] += int(n)
+    total = len(df_filtrado)
+    selecionados = len(st.session_state.selected_idxs)
+    st.caption(f"Brancos: {contagem.get('Brancos', 0)} | Tintos: {contagem.get('Tintos', 0)} | Rosés: {contagem.get('Rosés', 0)} | Espumantes: {contagem.get('Espumantes', 0)} | Total: {total} | Selecionados: {selecionados} | Fator: {float(fator_global):.2f}")
+
+    # Tabela editável (data_editor)
+    edited = st.data_editor(
+        df_filtrado.assign(
+            selecionado=lambda d: d["idx"].apply(lambda i: i in st.session_state.selected_idxs),
+            foto=lambda d: d["cod"].apply(lambda c: "●" if get_imagem_file(str(c)) else ""),
+        )[["selecionado","foto","cod","descricao","pais","regiao","preco_base","preco_de_venda","fator","idx"]],
+        hide_index=True,
+        column_config={
+            "selecionado": st.column_config.CheckboxColumn("SELECIONADO"),
+            "foto": st.column_config.TextColumn("FOTO"),
+            "cod": st.column_config.NumberColumn("COD"),
+            "descricao": st.column_config.TextColumn("DESCRICAO"),
+            "pais": st.column_config.TextColumn("PAIS"),
+            "regiao": st.column_config.TextColumn("REGIAO"),
+            "preco_base": st.column_config.NumberColumn("PRECO_BASE", format="R$ %.2f", step=0.01),
+            "preco_de_venda": st.column_config.NumberColumn("PRECO_VENDA", format="R$ %.2f", step=0.01),
+            "fator": st.column_config.NumberColumn("FATOR", format="%.2f", step=0.1),
+            "idx": st.column_config.NumberColumn("IDX", help="Identificador interno"),
+        },
+        use_container_width=True,
+        num_rows="dynamic",
+        key="editor_main",
     )
 
-with c4:
-    new_fat = st.number_input(
-        "Fator",
-        min_value=0.0,
-        value=float(fator_global),
-        step=0.1,
-        key="cadastro_fator"
-    )
+    # Sincroniza seleção/edições com o estado
+    # Selecões
+    new_selected = set(edited.loc[edited["selecionado"]==True, "idx"].astype(int).tolist()) if not edited.empty else set()
+    st.session_state.selected_idxs = new_selected
 
-with c5:
-    new_pv = st.number_input(
-        "Preço Venda",
-        min_value=0.0,
-        value=0.0,
-        step=0.01,
-        key="cadastro_preco_venda"
-    )
+    # Ajustes manuais
+    for _, r in edited.iterrows():
+        idx = int(r["idx"])
+        if pd.notnull(r.get("fator")):
+            st.session_state.manual_fat[idx] = float(r["fator"])
+        if pd.notnull(r.get("preco_de_venda")):
+            st.session_state.manual_preco_venda[idx] = float(r["preco_de_venda"])
 
-with c6:
-    new_pais = st.text_input("País")
+    for idx, fat in st.session_state.manual_fat.items():
+        df.loc[df["idx"]==idx, "fator"] = fat
+    df["preco_de_venda"] = df["preco_base"] * df["fator"]
+    for idx, pv in st.session_state.manual_preco_venda.items():
+        df.loc[df["idx"]==idx, "preco_de_venda"] = pv
 
-with c7:
-    new_regiao = st.text_input("Região")
+    # Botões
+    cA, cB, cC, cD, cE = st.columns([1,1.2,1.2,1.2,1.2])
+    with cA:
+        ver_preview = st.button("Visualizar Sugestão", key="btn_preview")
+    with cB:
+        ver_marcados = st.button("Visualizar Itens Marcados", key="btn_marcados")
+    with cC:
+        gerar_pdf_btn = st.button("Gerar PDF", key="btn_pdf")
+    with cD:
+        exportar_excel_btn = st.button("Exportar para Excel", key="btn_excel")
+    with cE:
+        salvar_sugestao_btn = st.button("Salvar Sugestão", key="btn_salvar")
 
-if st.button("Cadastrar"):
-    try:
-        cod_int = int(float(new_cod)) if new_cod else None
-        pv_calc = new_pv if new_pv > 0 else new_preco * new_fat
-        novo = {
-            "idx": int(df["idx"].max()+1) if len(df) > 0 else 0,
-            "cod": cod_int,
-            "descricao": new_desc,
-            "preco_base": new_preco,
-            "fator": new_fat,
-            "preco_de_venda": pv_calc,
-            "pais": new_pais,
-            "regiao": new_regiao,
-            "tipo": "",
-        }
-        st.session_state.setdefault("cadastrados", [])
-        st.session_state["cadastrados"].append(novo)
-        st.success("Produto cadastrado na sessão atual.")
-    except Exception as e:
-        st.error(f"Erro ao cadastrar: {e}")
+    if ver_preview:
+        if not st.session_state.selected_idxs:
+            st.info("Nenhum item selecionado.")
+        else:
+            st.subheader("Pré-visualização da Sugestão")
+            df_sel = df[df["idx"].isin(st.session_state.selected_idxs)].copy()
+            df_sel = ordenar_para_saida(df_sel)
+            # Gera preview textual
+            preview_lines = []
+            preview_lines.append("Sugestão Carta de Vinhos")
+            if cliente:
+                preview_lines.append(f"Cliente: {cliente}")
+            preview_lines.append("="*70)
+            ordem_geral = 1
+            for tipo in df_sel['tipo'].dropna().unique():
+                preview_lines.append(f"\n{str(tipo).upper()}")
+                for pais in df_sel[df_sel['tipo']==tipo]['pais'].dropna().unique():
+                    preview_lines.append(f"  {str(pais).upper()}")
+                    grupo = df_sel[(df_sel['tipo']==tipo) & (df_sel['pais']==pais)]
+                    for _, row in grupo.iterrows():
+                        desc = row['descricao']
+                        try:
+                            preco = f"R$ {float(row['preco_base']):.2f}"
+                            pvenda = f"R$ {float(row['preco_de_venda']):.2f}"
+                        except Exception:
+                            preco = "R$ -"
+                            pvenda = "R$ -"
+                        regiao = row['regiao']
+                        try:
+                            cod = int(row['cod']) if pd.notnull(row['cod']) else ""
+                        except Exception:
+                            cod = str(row.get('cod',""))
+                        preview_lines.append(f"    {ordem_geral:02d} ({cod}) {desc}")
+                        uvas = [str(row.get(f"uva{i}", "")).strip() for i in range(1,4)]
+                        uvas_str = ", ".join([u for u in uvas if u and u.lower()!='nan'])
+                        linha2 = f"      {row.get('pais','')} | {regiao}"
+                        if uvas_str: linha2 += f" | {uvas_str}"
+                        preview_lines.append(linha2)
+                        preview_lines.append(f"      ({preco})  {pvenda}")
+                        if inserir_foto and get_imagem_file(str(row.get('cod',''))):
+                            preview_lines.append("      [COM FOTO]")
+                        ordem_geral += 1
+            preview_lines.append("\n" + "="*70)
+            now = datetime.now().strftime("%d/%m/%Y %H:%M")
+            preview_lines.append(f"Gerado em: {now}")
+            st.code("\n".join(preview_lines))
 
+    if ver_marcados:
+        if not st.session_state.selected_idxs:
+            st.info("Nenhum item selecionado.")
+        else:
+            st.subheader("Itens Marcados")
+            df_sel = df[df["idx"].isin(st.session_state.selected_idxs)].copy()
+            df_sel = df_sel[["cod","descricao","pais","regiao","preco_base","preco_de_venda"]].sort_values(["pais","descricao"])
+            st.dataframe(df_sel, use_container_width=True)
 
+    if gerar_pdf_btn:
+        if not st.session_state.selected_idxs:
+            st.warning("Selecione ao menos um vinho.")
+        else:
+            df_sel = df[df["idx"].isin(st.session_state.selected_idxs)].copy()
+            df_sel = ordenar_para_saida(df_sel)
+            pdf_buffer = gerar_pdf(df_sel, "Sugestão Carta de Vinhos", cliente, inserir_foto, logo_bytes)
+            st.download_button("Baixar PDF", data=pdf_buffer, file_name="sugestao_carta_vinhos.pdf", mime="application/pdf", key="dl_pdf")
 
+    if exportar_excel_btn:
+        if not st.session_state.selected_idxs:
+            st.warning("Selecione ao menos um vinho.")
+        else:
+            df_sel = df[df["idx"].isin(st.session_state.selected_idxs)].copy()
+            df_sel = ordenar_para_saida(df_sel)
+            xlsx = exportar_excel_like_pdf(df_sel, inserir_foto=inserir_foto)
+            st.download_button("Baixar Excel", data=xlsx, file_name="sugestao_carta_vinhos.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dl_xlsx")
+
+    if salvar_sugestao_btn:
+        garantir_pastas()
+        nome = st.text_input("Nome da sugestão para salvar:", value="", key="nome_sugestao")
+        if nome and st.button("Confirmar salvar", key="btn_confirma_salvar"):
+            path = os.path.join(SUGESTOES_DIR, f"{nome}.txt")
+            try:
+                with open(path, "w") as f:
+                    f.write(",".join(map(str, sorted(list(st.session_state.selected_idxs)))))
+                st.success(f"Sugestão '{nome}' salva em {path}.")
+            except Exception as e:
+                st.error(f"Erro ao salvar: {e}")
+
+    # Abas
+    st.markdown("---")
+    tab1, tab2 = st.tabs(["Sugestões Salvas", "Cadastro de Vinhos"])
+
+    with tab1:
+        garantir_pastas()
+        arquivos = [f for f in os.listdir(SUGESTOES_DIR) if f.endswith(".txt")]
+        sel = st.selectbox("Abrir sugestão", [""] + [a[:-4] for a in arquivos], key="sel_sugestao")
+        colx, coly, colz = st.columns([1,1,1])
+        with colx:
+            if st.button("Excluir sugestão selecionada", key="btn_excluir_sug"):
+                if sel:
+                    try:
+                        os.remove(os.path.join(SUGESTOES_DIR, f"{sel}.txt"))
+                        st.success(f"Sugestão '{sel}' excluída. Recarregue a página para atualizar a lista.")
+                    except Exception as e:
+                        st.error(f"Erro ao excluir: {e}")
+                else:
+                    st.info("Selecione uma sugestão na lista.")
+        with coly:
+            if st.button("Editar itens (carregar na grade)", key="btn_editar_sug"):
+                if sel:
+                    path = os.path.join(SUGESTOES_DIR, f"{sel}.txt")
+                    if os.path.exists(path):
+                        try:
+                            with open(path) as f:
+                                indices = [int(x) for x in f.read().strip().split(",") if x]
+                            st.session_state.selected_idxs = set(indices)
+                            st.success("Itens carregados. Role até a grade principal para ver/editar.")
+                        except Exception as e:
+                            st.error(f"Erro ao carregar: {e}")
+                else:
+                    st.info("Selecione uma sugestão na lista.")
+        with colz:
+            if st.button("Adicionar todos os produtos (mostrar todos)", key="btn_add_todos"):
+                st.session_state.selected_idxs = set()
+
+    with tab2:
+        st.caption("Cadastrar novo produto (entra apenas na sessão atual; salve no seu Excel depois, se quiser persistir).")
+        c1b, c2b, c3b, c4b, c5b, c6b, c7b = st.columns([1,2,1,1,1,1,1.2])
+        with c1b:
+            new_cod = st.text_input("Código", key="cad_cod")
+        with c2b:
+            new_desc = st.text_input("Descrição", key="cad_desc")
+        with c3b:
+            new_preco = st.number_input("Preço", min_value=0.0, value=0.0, step=0.01, key="cad_preco")
+        with c4b:
+            new_fat = st.number_input("Fator", min_value=0.0, value=float(fator_global), step=0.1, key="cad_fator")
+        with c5b:
+            new_pv = st.number_input("Preço Venda", min_value=0.0, value=0.0, step=0.01, key="cad_pv")
+        with c6b:
+            new_pais = st.text_input("País", key="cad_pais")
+        with c7b:
+            new_regiao = st.text_input("Região", key="cad_regiao")
+
+        if st.button("Cadastrar", key="btn_cadastrar"):
             try:
                 cod_int = int(float(new_cod)) if new_cod else None
                 pv_calc = new_pv if new_pv > 0 else new_preco * new_fat
@@ -421,18 +707,14 @@ if st.button("Cadastrar"):
                     "regiao": new_regiao,
                     "tipo": "",
                 }
-                # Atualiza apenas sessão atual (não salva no Excel automaticamente)
-                # Caso deseje persistir, exporte/mescle externamente no seu arquivo de dados.
                 st.session_state.setdefault("cadastrados", [])
                 st.session_state["cadastrados"].append(novo)
                 st.success("Produto cadastrado na sessão atual.")
             except Exception as e:
                 st.error(f"Erro ao cadastrar: {e}")
 
-        # Visualização dos cadastrados nesta sessão
         if st.session_state.get("cadastrados"):
             st.dataframe(pd.DataFrame(st.session_state["cadastrados"]), use_container_width=True)
 
 if __name__ == "__main__":
-    import pandas as pd
     main()

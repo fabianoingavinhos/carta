@@ -4,3 +4,4 @@ pandas
 pillow
 reportlab
 openpyxl
+xlrd>=2.0.1

@@ -385,7 +385,25 @@ with c7:
     new_regiao = st.text_input("Região")
 
 if st.button("Cadastrar"):
-
+    try:
+        cod_int = int(float(new_cod)) if new_cod else None
+        pv_calc = new_pv if new_pv > 0 else new_preco * new_fat
+        novo = {
+            "idx": int(df["idx"].max()+1) if len(df) > 0 else 0,
+            "cod": cod_int,
+            "descricao": new_desc,
+            "preco_base": new_preco,
+            "fator": new_fat,
+            "preco_de_venda": pv_calc,
+            "pais": new_pais,
+            "regiao": new_regiao,
+            "tipo": "",
+        }
+        st.session_state.setdefault("cadastrados", [])
+        st.session_state["cadastrados"].append(novo)
+        st.success("Produto cadastrado na sessão atual.")
+    except Exception as e:
+        st.error(f"Erro ao cadastrar: {e}")
 
 
 

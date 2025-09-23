@@ -351,282 +351,34 @@ def main():
         with c2:
             logo_cliente = st.file_uploader("Carregar logo (cliente)", type=["png","jpg","jpeg"])
             logo_bytes = logo_cliente.read() if logo_cliente else None
-        with c3:
-            inserir_foto = st.checkbox("Inserir foto no PDF/Excel", value=True)
-        with c4:
-            preco_flag = st.selectbox("Tabela de preço", ["preco1", "preco2", "preco15", "preco38", "preco39", "preco55", "preco63"], index=0, help="Escolha a coluna base de preço")
-        with c5:
-            termo_global = st.text_input("Buscar", value="")
-        with c6:
-            fator_global = st.number_input("Fator", min_value=0.0, value=2.0, step=0.1)
-        with c7:
-            resetar = st.button("Resetar/Mostrar Todos")
-        with c8:
-            caminho_planilha = st.text_input("Arquivo de dados", value="vinhos1.xls", help="Caminho do arquivo XLS/XLSX (ex.: vinhos1.xls)")
-
-    # Carregamento dos dados
-    df = ler_excel_vinhos(caminho_planilha)
-    df = atualiza_coluna_preco_base(df, preco_flag)
-
-    # Aplicação do fator global
-    df["fator"] = fator_global
-    df["preco_de_venda"] = df["preco_base"] * df["fator"]
-
-    # Sidebar de filtros (espelhando o LabelFrame de filtros no Tkinter)
-    st.sidebar.header("Filtros")
-    pais_opc = [""] + sorted([p for p in df["pais"].dropna().astype(str).unique().tolist() if p])
-    tipo_opc = [""] + sorted([t for t in df["tipo"].dropna().astype(str).unique().tolist() if t])
-    desc_opc = [""] + sorted([d for d in df["descricao"].dropna().astype(str).unique().tolist() if d])
-    regiao_opc = [""] + sorted([r for r in df["regiao"].dropna().astype(str).unique().tolist() if r])
-    cod_opc = [""] + sorted([str(c) for c in df["cod"].dropna().astype(str).unique().tolist()])
-
-    filt_pais = st.sidebar.selectbox("País", pais_opc, index=0)
-    filt_tipo = st.sidebar.selectbox("Tipo", tipo_opc, index=0)
-    filt_desc = st.sidebar.selectbox("Descrição", desc_opc, index=0)
-    filt_regiao = st.sidebar.selectbox("Região", regiao_opc, index=0)
-    filt_cod = st.sidebar.selectbox("Código", cod_opc, index=0)
-    col1, col2 = st.sidebar.columns(2)
-    with col1:
-        preco_min = st.number_input("Preço mín (base)", min_value=0.0, value=0.0, step=1.0)
-    with col2:
-        preco_max = st.number_input("Preço máx (base)", min_value=0.0, value=0.0, step=1.0, help="0 = sem limite")
-
-    # Estado de seleção
-    if "selected_idxs" not in st.session_state:
-        st.session_state.selected_idxs = set()
-    if "manual_fat" not in st.session_state:
-        st.session_state.manual_fat = {}  # idx -> fator
-    if "manual_preco_venda" not in st.session_state:
-        st.session_state.manual_preco_venda = {}  # idx -> pv
-
-    # Aplicar filtros
-    df_filtrado = df.copy()
-    if termo_global.strip():
-        term = termo_global.strip().lower()
-        mask = df_filtrado.apply(lambda row: term in " ".join(str(v).lower() for v in row.values), axis=1)
-        df_filtrado = df_filtrado[mask]
-    if filt_pais:
-        df_filtrado = df_filtrado[df_filtrado["pais"] == filt_pais]
-    if filt_tipo:
-        df_filtrado = df_filtrado[df_filtrado["tipo"] == filt_tipo]
-    if filt_desc:
-        df_filtrado = df_filtrado[df_filtrado["descricao"] == filt_desc]
-    if filt_regiao:
-        df_filtrado = df_filtrado[df_filtrado["regiao"] == filt_regiao]
-    if filt_cod:
-        df_filtrado = df_filtrado[df_filtrado["cod"].astype(str) == filt_cod]
-    if preco_min:
-        df_filtrado = df_filtrado[df_filtrado["preco_base"] >= float(preco_min)]
-    if preco_max and preco_max > 0:
-        df_filtrado = df_filtrado[df_filtrado["preco_base"] <= float(preco_max)]
-
-    if resetar:
-        st.session_state.selected_idxs = set()
-        df_filtrado = df.copy()
-
-    # Contagem por tipo (igual ao label no Tkinter)
-    tipo_map = {'branco': 'Brancos', 'tinto': 'Tintos', 'rose': 'Rosés', 'rosé': 'Rosés', 'espumante': 'Espumantes'}
-    contagem = {'Brancos': 0, 'Tintos': 0, 'Rosés': 0, 'Espumantes': 0, 'outros': 0}
-    for t in df_filtrado['tipo'].dropna().unique():
-        lbl = next((lbl for k, lbl in tipo_map.items() if k in str(t).lower()), 'outros')
-        contagem[lbl] = len(df_filtrado[df_filtrado['tipo'] == t])
-    total = len(df_filtrado)
-    selecionados = len(st.session_state.selected_idxs)
-    st.caption(f"Brancos: {contagem.get('Brancos', 0)} | Tintos: {contagem.get('Tintos', 0)} | Rosés: {contagem.get('Rosés', 0)} | Espumantes: {contagem.get('Espumantes', 0)} | Total: {total} | Selecionados: {selecionados} | Fator: {fator_global:.2f}")
-
-    # Tabela editável semelhante ao Treeview, com seleção
-    # Construímos uma view com colunas chave e flags de seleção/foto
-    view = df_filtrado.copy()
-    view["selecionado"] = view["idx"].apply(lambda i: i in st.session_state.selected_idxs)
-    view["foto"] = view["cod"].apply(lambda c: "●" if get_imagem_file(str(c)) else "")
-    view_display_cols = ["selecionado", "foto", "cod", "descricao", "pais", "regiao", "preco_base", "preco_de_venda", "fator", "idx"]
-    view = view_display_cols[:8] + ["fator"] # ensure order
-
-    editable_cols = ["selecionado", "preco_de_venda", "fator"]
-    edited = st.data_editor(
-        df_filtrado.assign(
-            selecionado=lambda d: d["idx"].apply(lambda i: i in st.session_state.selected_idxs),
-            foto=lambda d: d["cod"].apply(lambda c: "●" if get_imagem_file(str(c)) else ""),
-        )[["selecionado","foto","cod","descricao","pais","regiao","preco_base","preco_de_venda","fator","idx"]],
-        hide_index=True,
-        column_config={
-            "selecionado": st.column_config.CheckboxColumn("SELECIONADO"),
-            "foto": st.column_config.TextColumn("FOTO"),
-            "cod": st.column_config.NumberColumn("COD"),
-            "descricao": st.column_config.TextColumn("DESCRICAO"),
-            "pais": st.column_config.TextColumn("PAIS"),
-            "regiao": st.column_config.TextColumn("REGIAO"),
-            "preco_base": st.column_config.NumberColumn("PRECO_BASE", format="R$ %.2f", step=0.01),
-            "preco_de_venda": st.column_config.NumberColumn("PRECO_VENDA", format="R$ %.2f", step=0.01),
-            "fator": st.column_config.NumberColumn("FATOR", format="%.2f", step=0.1),
-            "idx": st.column_config.NumberColumn("IDX", help="Identificador interno"),
-        },
-        use_container_width=True,
-        num_rows="dynamic",
-        key="editor_main",
-    )
-
-    # Sincroniza seleção/edições com o estado
-    # Atualiza seleções
-    new_selected = set(edited.loc[edited["selecionado"]==True, "idx"].astype(int).tolist()) if not edited.empty else set()
-    st.session_state.selected_idxs -= set([i for i in st.session_state.selected_idxs if i not in new_selected])
-    st.session_state.selected_idxs |= new_selected
-
-    # Atualiza ajustes manuais
-    for _, r in edited.iterrows():
-        idx = int(r["idx"])
-        if pd.notnull(r.get("fator")):
-            st.session_state.manual_fat[idx] = float(r["fator"])
-        if pd.notnull(r.get("preco_de_venda")):
-            st.session_state.manual_preco_venda[idx] = float(r["preco_de_venda"])
-
-    # Aplica ajustes no df base (apenas nos índices visíveis/gerais)
-    for idx, fat in st.session_state.manual_fat.items():
-        df.loc[df["idx"]==idx, "fator"] = fat
-    df["preco_de_venda"] = df["preco_base"] * df["fator"]
-    for idx, pv in st.session_state.manual_preco_venda.items():
-        df.loc[df["idx"]==idx, "preco_de_venda"] = pv
-
-    # Botões como no Tkinter
-    cA, cB, cC, cD, cE = st.columns([1,1.2,1.2,1.2,1.2])
-    with cA:
-        ver_preview = st.button("Visualizar Sugestão")
-    with cB:
-        ver_marcados = st.button("Visualizar Itens Marcados")
-    with cC:
-        gerar_pdf_btn = st.button("Gerar PDF")
-    with cD:
-        exportar_excel_btn = st.button("Exportar para Excel")
-    with cE:
-        salvar_sugestao_btn = st.button("Salvar Sugestão")
-
-    # Funções dos botões
-    if ver_preview:
-        if not st.session_state.selected_idxs:
-            st.info("Nenhum item selecionado.")
-        else:
-            st.subheader("Pré-visualização da Sugestão")
-            df_sel = df[df["idx"].isin(st.session_state.selected_idxs)].copy()
-            df_sel = ordenar_para_saida(df_sel)
-            # Gera preview textual
-            preview_lines = []
-            preview_lines.append("Sugestão Carta de Vinhos")
-            if cliente:
-                preview_lines.append(f"Cliente: {cliente}")
-            preview_lines.append("="*70)
-            ordem_geral = 1
-            tipo_map = {'branco':'Brancos', 'tinto':'Tintos', 'rose':'Rosés', 'rosé':'Rosés', 'espumante':'Espumantes'}
-            for tipo in df_sel['tipo'].dropna().unique():
-                preview_lines.append(f"\n{str(tipo).upper()}")
-                for pais in df_sel[df_sel['tipo']==tipo]['pais'].dropna().unique():
-                    preview_lines.append(f"  {str(pais).upper()}")
-                    grupo = df_sel[(df_sel['tipo']==tipo) & (df_sel['pais']==pais)]
-                    for _, row in grupo.iterrows():
-                        desc = row['descricao']
-                        preco = f"R$ {row['preco_base']:.2f}"
-                        pvenda = f"R$ {row['preco_de_venda']:.2f}"
-                        regiao = row['regiao']
-                        cod = int(row['cod']) if pd.notnull(row['cod']) else ""
-                        preview_lines.append(f"    {ordem_geral:02d} ({cod}) {desc}")
-                        uvas = [str(row.get(f"uva{i}", "")).strip() for i in range(1,4)]
-                        uvas_str = ", ".join([u for u in uvas if u and u.lower()!='nan'])
-                        linha2 = f"      {row.get('pais','')} | {regiao}"
-                        if uvas_str: linha2 += f" | {uvas_str}"
-                        preview_lines.append(linha2)
-                        preview_lines.append(f"      ({preco})  {pvenda}")
-                        if inserir_foto and get_imagem_file(str(row.get('cod',''))):
-                            preview_lines.append("      [COM FOTO]")
-                        ordem_geral += 1
-            preview_lines.append("\n" + "="*70)
-            now = datetime.now().strftime("%d/%m/%Y %H:%M")
-            preview_lines.append(f"Gerado em: {now}")
-            st.code("\n".join(preview_lines))
-
-    if ver_marcados:
-        if not st.session_state.selected_idxs:
-            st.info("Nenhum item selecionado.")
-        else:
-            st.subheader("Itens Marcados")
-            df_sel = df[df["idx"].isin(st.session_state.selected_idxs)].copy()
-            df_sel = df_sel[["cod","descricao","pais","regiao","preco_base","preco_de_venda"]].sort_values(["pais","descricao"])
-            st.dataframe(df_sel, use_container_width=True)
-
-    if gerar_pdf_btn:
-        if not st.session_state.selected_idxs:
-            st.warning("Selecione ao menos um vinho.")
-        else:
-            df_sel = df[df["idx"].isin(st.session_state.selected_idxs)].copy()
-            df_sel = ordenar_para_saida(df_sel)
-            pdf_buffer = gerar_pdf(df_sel, "Sugestão Carta de Vinhos", cliente, inserir_foto, logo_bytes)
-            st.download_button("Baixar PDF", data=pdf_buffer, file_name="sugestao_carta_vinhos.pdf", mime="application/pdf")
-
-    if exportar_excel_btn:
-        if not st.session_state.selected_idxs:
-            st.warning("Selecione ao menos um vinho.")
-        else:
-            df_sel = df[df["idx"].isin(st.session_state.selected_idxs)].copy()
-            df_sel = ordenar_para_saida(df_sel)
-            xlsx = exportar_excel_like_pdf(df_sel, inserir_foto=inserir_foto)
-            st.download_button("Baixar Excel", data=xlsx, file_name="sugestao_carta_vinhos.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-    if salvar_sugestao_btn:
-        if not st.session_state.selected_idxs:
-            st.info("Selecione produtos para salvar.")
-        else:
-            garantir_pastas()
-            nome = st.text_input("Nome da sugestão para salvar:", value="", key="nome_sugestao")
-            if nome:
-                path = os.path.join(SUGESTOES_DIR, f"{nome}.txt")
-                try:
-                    with open(path, "w") as f:
-                        f.write(",".join(map(str, sorted(list(st.session_state.selected_idxs)))))
-                    st.success(f"Sugestão '{nome}' salva em {path}.")
-                except Exception as e:
-                    st.error(f"Erro ao salvar: {e}")
-
-    # Aba Sugestões Salvas (lista e ações) + Cadastro
-    st.markdown("---")
-    tab1, tab2 = st.tabs(["Sugestões Salvas", "Cadastro de Vinhos"])
-
-    with tab1:
-        garantir_pastas()
-        # Lista de sugestões existentes
-        arquivos = [f for f in os.listdir(SUGESTOES_DIR) if f.endswith(".txt")]
-        sel = st.selectbox("Abrir sugestão", [""] + [a[:-4] for a in arquivos])
-        colx, coly, colz = st.columns([1,1,1])
-        with colx:
-            if st.button("Excluir sugestão selecionada") and sel:
-                try:
-                    os.remove(os.path.join(SUGESTOES_DIR, f"{sel}.txt"))
-                    st.success(f"Sugestão '{sel}' excluída. Recarregue a página para atualizar a lista.")
-                except Exception as e:
-                    st.error(f"Erro ao excluir: {e}")
-        with coly:
-            if st.button("Editar itens (carregar na grade)") and sel:
-                path = os.path.join(SUGESTOES_DIR, f"{sel}.txt")
-                if os.path.exists(path):
-                    try:
-                        with open(path) as f:
-                            indices = [int(x) for x in f.read().strip().split(",") if x]
-                        st.session_state.selected_idxs = set(indices)
-                        st.success("Itens carregados. Role até a grade principal para ver/editar.")
-                    except Exception as e:
-                        st.error(f"Erro ao carregar: {e}")
-        with colz:
-            if st.button("Adicionar todos os produtos (mostrar todos)"):
-                st.session_state.selected_idxs = set()
-
-    with tab2:
-        st.caption("Cadastrar novo produto (entra apenas na sessão atual; salve no seu Excel depois, se quiser persistir).")
-        c1, c2, c3, c4, c5, c6, c7 = st.columns([1,2,1,1,1,1,1.2])
-        with c1: new_cod = st.text_input("Código")
-        with c2: new_desc = st.text_input("Descrição")
-        with c3: new_preco = st.number_input("Preço" min_value=0.0, value=0.0, step=0.01, , key="cadastro_preco")
-        with c4: new_fat = st.number_input("Fator", min_value=0.0, value=float(fator_global), key="cadastro_fator", step=0.1)
-        with c5: new_pv = st.number_input("Preço Venda" min_value=0.0, value=0.0, step=0.01, , key="cadastro_preco_venda")
+        with c3: 
+        new_preco = st.number_input(
+            "Preço", 
+            min_value=0.0, 
+            value=0.0, 
+            step=0.01, 
+            key="cadastro_preco"
+        )
+        with c4: 
+            new_fat = st.number_input(
+                "Fator", 
+                min_value=0.0, 
+                value=float(fator_global), 
+                step=0.1, 
+                key="cadastro_fator"
+            )
+        with c5: 
+            new_pv = st.number_input(
+                "Preço Venda", 
+                min_value=0.0, 
+                value=0.0, 
+                step=0.01, 
+                key="cadastro_preco_venda"
+            )
         with c6: new_pais = st.text_input("País")
         with c7: new_regiao = st.text_input("Região")
         if st.button("Cadastrar"):
+
             try:
                 cod_int = int(float(new_cod)) if new_cod else None
                 pv_calc = new_pv if new_pv > 0 else new_preco * new_fat

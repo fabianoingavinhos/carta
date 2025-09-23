@@ -3,15 +3,11 @@
 # -*- coding: utf-8 -*-
 
 """
-app_streamlit_final_v4.py
-
-Foco desta versão:
-- ✅ Seleções PERSISTEM ao trocar filtros (sem sumir)
-- ✅ Seleção mais rápida/objetiva: botões "Marcar/Desmarcar filtrados" + Multiselect
-- ✅ Salvar sugestão gravando corretamente
-- ✅ Itens cadastrados entram no DF principal (aparecem na grade e exportações)
-
-Requisitos: streamlit, pandas, pillow, reportlab, openpyxl, xlrd (para .xls)
+app_streamlit_final_v2.py
+Correções:
+- As seleções permanecem marcadas mesmo ao mudar filtros (persistência global por idx)
+- "Salvar Sugestão" salva imediatamente pelo nome informado (sem botão extra)
+- Itens cadastrados passam a integrar o DF principal (entram na grade/filtros/exports)
 """
 
 import os
@@ -40,6 +36,14 @@ SUGESTOES_DIR = os.path.join(BASE_DIR, "sugestoes")
 CARTA_DIR = os.path.join(BASE_DIR, "CARTA")
 LOGO_PADRAO = os.path.join(CARTA_DIR, "logo_inga.png")
 
+CAMPOS_NOVOS = [
+    "idx","cod","descricao","visual","olfato","gustativo","premiacoes","amadurecimento",
+    "regiao","pais","vinicola","corpo","tipo",
+    "uva1","uva2","uva3",
+    "preco38","preco39","preco1","preco2","preco15","preco55","preco63",
+    "preco_base","fator","preco_de_venda"
+]
+
 TIPO_ORDEM_FIXA = [
     "Espumantes", "Brancos", "Rosés", "Tintos",
     "Frisantes", "Fortificados", "Vinhos de sobremesa", "Licorosos"
@@ -50,6 +54,7 @@ def garantir_pastas():
         os.makedirs(p, exist_ok=True)
 
 def ler_excel_vinhos(caminho="vinhos1.xls"):
+    # Aceita .xls (xlrd) e .xlsx (openpyxl)
     _, ext = os.path.splitext(caminho.lower())
     engine = None
     if ext == ".xls":
@@ -58,24 +63,23 @@ def ler_excel_vinhos(caminho="vinhos1.xls"):
         engine = "openpyxl"
     try:
         df = pd.read_excel(caminho, engine=engine)
-    except ImportError:
-        st.error("Para ler .xls instale xlrd>=2.0.1, ou converta para .xlsx (openpyxl).")
+    except ImportError as e:
+        st.error("Para ler arquivos .xls, instale xlrd>=2.0.1. "
+                 "Se possível, converta seu arquivo para .xlsx (openpyxl).")
         raise
     except Exception:
         df = pd.read_excel(caminho)
     df.columns = [c.strip().lower() for c in df.columns]
+    # Completa colunas esperadas
+    for col in CAMPOS_NOVOS:
+        if col not in df.columns:
+            df[col] = None
+    # Númericas
+    for col in ["preco38","preco39","preco1","preco2","preco15","preco55","preco63","preco_base","fator","preco_de_venda"]:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+    # Índice original preservado para seleção
     if "idx" not in df.columns or df["idx"].isna().all():
         df = df.reset_index(drop=False).rename(columns={"index": "idx"})
-    # normaliza tipos
-    df["idx"] = pd.to_numeric(df["idx"], errors="coerce").fillna(-1).astype(int)
-    for col in ["preco38","preco39","preco1","preco2","preco15","preco55","preco63","preco_base","fator","preco_de_venda"]:
-        if col not in df.columns:
-            df[col] = 0.0
-        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
-    for col in ["cod","descricao","pais","regiao","tipo","uva1","uva2","uva3","amadurecimento","vinicola","corpo","visual","olfato","gustativo","premiacoes"]:
-        if col not in df.columns:
-            df[col] = ""
-        df[col] = df[col].astype(str)
     return df
 
 def get_imagem_file(cod: str):
@@ -95,7 +99,10 @@ def get_imagem_file(cod: str):
     return None
 
 def atualiza_coluna_preco_base(df: pd.DataFrame, flag: str, fator_global: float):
-    base = df[flag] if flag in df.columns else df.get("preco1", 0.0)
+    if flag not in df.columns:
+        base = df.get("preco1", 0.0)
+    else:
+        base = df[flag].fillna(0.0)
     df["preco_base"] = pd.to_numeric(base, errors="coerce").fillna(0.0)
     if "fator" not in df.columns:
         df["fator"] = fator_global
@@ -136,10 +143,13 @@ def add_pdf_footer(c, contagem, total_rotulos, fator_geral):
     except Exception:
         fator_str = str(fator_geral)
     c.setFont("Helvetica-Bold", 6)
-    c.drawString(32, y_rodape+7,
+    c.drawString(
+        32,
+        y_rodape+7,
         f"Brancos: {contagem.get('Brancos',0)} | Tintos: {contagem.get('Tintos',0)} | "
         f"Rosés: {contagem.get('Rosés',0)} | Espumantes: {contagem.get('Espumantes',0)} | "
-        f"Total: {int(total_rotulos)} | Fator: {fator_str}")
+        f"Total: {int(total_rotulos)} | Fator: {fator_str}"
+    )
     c.setFont("Helvetica", 5)
     c.drawString(32, y_rodape-5, "Ingá Distribuidora Ltda | CNPJ 05.390.477/0002-25 Rod BR 232, KM 18,5 - S/N- Manassu - CEP 54130-340 Jaboatão")
     c.setFont("Helvetica-Bold", 6)
@@ -255,7 +265,7 @@ def exportar_excel_like_pdf(df, inserir_foto=True):
             cell = ws.cell(row=row_num, column=1, value=str(pais).upper()); cell.font = Font(bold=True, size=14); row_num += 1
             grupo = df_sorted[(df_sorted['tipo'] == tipo) & (df_sorted['pais'] == pais)]
             for _, row in grupo.iterrows():
-                ws.cell(row=row_num, column=1, value=f"{ordem_geral:02d} ({int(row['cod']) if str(row['cod']).isdigit() else ''})").font = Font(size=11)
+                ws.cell(row=row_num, column=1, value=f"{ordem_geral:02d} ({int(row['cod']) if pd.notnull(row['cod']) else ''})").font = Font(size=11)
                 ws.cell(row=row_num, column=2, value=str(row['descricao'])).font = Font(bold=True, size=12)
                 if inserir_foto:
                     imgfile = get_imagem_file(str(row.get('cod','')))
@@ -290,7 +300,7 @@ def main():
     st.set_page_config(page_title="Sugestão de Carta de Vinhos", layout="wide")
     garantir_pastas()
 
-    # Estado
+    # Estado base
     if "selected_idxs" not in st.session_state:
         st.session_state.selected_idxs = set()
     if "manual_fat" not in st.session_state:
@@ -330,14 +340,13 @@ def main():
     df = ler_excel_vinhos(caminho_planilha)
     df = atualiza_coluna_preco_base(df, preco_flag, fator_global=float(fator_global))
 
-    # Integra itens cadastrados (sessão)
+    # Integra itens cadastrados na sessão (agora fazem parte do DF principal)
     if st.session_state.cadastrados:
         cad_df = pd.DataFrame(st.session_state.cadastrados)
         # Completa colunas
         for col in df.columns:
             if col not in cad_df.columns:
                 cad_df[col] = None
-        cad_df["idx"] = pd.to_numeric(cad_df["idx"], errors="coerce").fillna(-1).astype(int)
         df = pd.concat([df, cad_df[df.columns]], ignore_index=True)
 
     # Sidebar de filtros
@@ -360,7 +369,7 @@ def main():
     with colp2:
         preco_max = st.number_input("Preço máx (base)", min_value=0.0, value=0.0, step=1.0, help="0 = sem limite", key="preco_max")
 
-    # Aplicar filtros (VIEW)
+    # Aplicar filtros para a VIEW (mas preservar seleções globais)
     df_filtrado = df.copy()
     if termo_global.strip():
         term = termo_global.strip().lower()
@@ -384,7 +393,7 @@ def main():
     if resetar:
         df_filtrado = df.copy()
 
-    # Contagem por tipo + status seleção
+    # Contagem por tipo
     contagem = {'Brancos': 0, 'Tintos': 0, 'Rosés': 0, 'Espumantes': 0, 'outros': 0}
     for t, n in df_filtrado.groupby('tipo').size().items():
         t_low = str(t).lower()
@@ -397,38 +406,25 @@ def main():
     selecionados = len(st.session_state.selected_idxs)
     st.caption(f"Brancos: {contagem.get('Brancos', 0)} | Tintos: {contagem.get('Tintos', 0)} | Rosés: {contagem.get('Rosés', 0)} | Espumantes: {contagem.get('Espumantes', 0)} | Total: {total} | Selecionados: {selecionados} | Fator: {float(fator_global):.2f}")
 
-    # === Seleção rápida ===
-    fast1, fast2, fast3 = st.columns([1.2,1.5,3])
-    with fast1:
-        if st.button("Marcar filtrados"):
-            ids = set(pd.to_numeric(df_filtrado["idx"], errors="coerce").dropna().astype(int).tolist())
-            st.session_state.selected_idxs |= ids
-    with fast2:
-        if st.button("Desmarcar filtrados"):
-            ids = set(pd.to_numeric(df_filtrado["idx"], errors="coerce").dropna().astype(int).tolist())
-            st.session_state.selected_idxs -= ids
-    with fast3:
-        # Multiselect para marcar/desmarcar rapidamente itens filtrados
-        opts = [(f"{str(r.cod)} — {r.descricao}", int(r.idx)) for r in df_filtrado[["cod","descricao","idx"]].itertuples(index=False)]
-        already = [v for (txt, v) in opts if v in st.session_state.selected_idxs]
-        sel_multi = st.multiselect("Selecionar itens (apenas dos filtrados)", options=[v for _, v in opts], default=already, format_func=lambda v: next((txt for txt,val in opts if val==v), str(v)))
-        # Atualiza só no universo filtrado: os não marcados no multiselect saem, os marcados entram
-        ids_filtrados = set(v for _, v in opts)
-        st.session_state.selected_idxs = (st.session_state.selected_idxs - ids_filtrados) | set(sel_multi)
-
-    # === Grade editável (somente dados numéricos/texto) ===
+    # Data editor com colunas e checkbox de seleção (baseado no set global)
+    # Data editor com colunas e checkbox de seleção (baseado no set global)
     view_df = df_filtrado.copy()
+
+    # Normaliza tipos para evitar erro do Streamlit
     view_df["idx"] = pd.to_numeric(view_df["idx"], errors="coerce").fillna(-1).astype(int)
     view_df["cod"] = view_df["cod"].astype(str)
     view_df["preco_base"] = pd.to_numeric(view_df["preco_base"], errors="coerce").fillna(0.0)
     view_df["preco_de_venda"] = pd.to_numeric(view_df["preco_de_venda"], errors="coerce").fillna(0.0)
     view_df["fator"] = pd.to_numeric(view_df["fator"], errors="coerce").fillna(0.0)
+    view_df["selecionado"] = view_df["idx"].apply(lambda i: i in st.session_state.selected_idxs)
+
     view_df["foto"] = view_df["cod"].apply(lambda c: "●" if get_imagem_file(str(c)) else "")
 
     edited = st.data_editor(
-        view_df[["foto","cod","descricao","pais","regiao","preco_base","preco_de_venda","fator","idx"]],
+        view_df[["selecionado","foto","cod","descricao","pais","regiao","preco_base","preco_de_venda","fator","idx"]],
         hide_index=True,
         column_config={
+            "selecionado": st.column_config.CheckboxColumn("SELECIONADO"),
             "foto": st.column_config.TextColumn("FOTO"),
             "cod": st.column_config.TextColumn("COD"),
             "descricao": st.column_config.TextColumn("DESCRICAO"),
@@ -444,8 +440,34 @@ def main():
         key="editor_main",
     )
 
+    # Atualizar o conjunto global de seleções (preserva selecionados fora do filtro)
+    # Persistência de seleção com comparação incremental (não desfaz ao trocar filtros)
+    curr_state = {}
+    if not edited.empty:
+        for _, row in edited.iterrows():
+            try:
+                idx_i = int(row["idx"])
+            except Exception:
+                continue
+            sel = bool(row.get("selecionado", False))
+            curr_state[idx_i] = sel
+
+    prev_state = st.session_state.get("prev_view_state", {})
+    global_sel = set(st.session_state.selected_idxs)
+
+    to_add = {i for i, s in curr_state.items() if s and prev_state.get(i) is not True}
+    to_remove = {i for i, s in curr_state.items() if (prev_state.get(i) is True) and not s}
+
+    global_sel |= to_add
+    global_sel -= to_remove
+
+    st.session_state.selected_idxs = global_sel
+    st.session_state.prev_view_state = curr_state
+
+
     # Ajustes manuais (aplicados no DF base, por idx)
     for _, r in edited.iterrows():
+        if pd.isna(r.get("idx")): continue
         idx = int(r["idx"])
         if pd.notnull(r.get("fator")):
             st.session_state.manual_fat[idx] = float(r["fator"])
@@ -458,7 +480,7 @@ def main():
     for idx, pv in st.session_state.manual_preco_venda.items():
         df.loc[df["idx"]==idx, "preco_de_venda"] = pv
 
-    # Botões de ação + salvar sugestão
+    # Botões de ação + campo de nome da sugestão
     cA, cB, cC, cD, cE, cF = st.columns([1,1.2,1.2,1.2,1.6,1.2])
     with cA:
         ver_preview = st.button("Visualizar Sugestão", key="btn_preview")
@@ -498,7 +520,7 @@ def main():
                             pvenda = f"R$ {float(row['preco_de_venda']):.2f}"
                         except Exception:
                             preco = "R$ -"; pvenda = "R$ -"
-                        try: cod = int(row['cod']) if str(row['cod']).isdigit() else ""
+                        try: cod = int(row['cod']) if pd.notnull(row['cod']) else ""
                         except Exception: cod = str(row.get('cod',""))
                         regiao = row.get('regiao',"")
                         preview_lines.append(f"    {ordem_geral:02d} ({cod}) {desc}")
@@ -606,6 +628,7 @@ def main():
         with c3b:
             new_preco = st.number_input("Preço", min_value=0.0, value=0.0, step=0.01, key="cad_preco")
         with c4b:
+            # usa o fator global como default
             new_fat = st.number_input("Fator", min_value=0.0, value=float(fator_global), step=0.1, key="cad_fator")
         with c5b:
             new_pv = st.number_input("Preço Venda", min_value=0.0, value=0.0, step=0.01, key="cad_pv")
@@ -618,7 +641,7 @@ def main():
             try:
                 cod_int = int(float(new_cod)) if new_cod else None
                 pv_calc = new_pv if new_pv > 0 else new_preco * new_fat
-                # idx único baseado no maior existente
+                # idx único considerando itens atuais + cadastrados
                 idx_next = 0
                 if "idx" in df.columns and not df["idx"].isna().all():
                     try:
@@ -627,7 +650,7 @@ def main():
                         idx_next = len(df) + 1
                 novo = {
                     "idx": idx_next,
-                    "cod": cod_int if cod_int is not None else "",
+                    "cod": cod_int,
                     "descricao": new_desc,
                     "preco_base": float(new_preco),
                     "fator": float(new_fat),

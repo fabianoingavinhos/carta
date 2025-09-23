@@ -3,26 +3,11 @@
 # -*- coding: utf-8 -*-
 
 """
-app_streamlit_final.py
-Versão consolidada e corrigida da app (Streamlit) espelhando o Tkinter.
-
-Mantém:
-- Filtros (global, país, tipo, região, código, preço min/máx)
-- Escolha de tabela de preços (preco1, preco2, preco15, preco38, preco39, preco55, preco63)
-- Fator global e ajustes manuais por item (fator e preço de venda)
-- Seleção de itens (marcar/desmarcar; visualizar marcados)
-- Geração de PDF (logo Ingá no topo direito sempre + logo de cliente opcional + fotos opcionais)
-- Exportação Excel com layout semelhante ao PDF
-- Salvar/Carregar sugestões (índices) em /sugestoes/*.txt
-- Cadastro de vinhos (na sessão)
-
-Pastas esperadas (iguais ao Tkinter):
-- imagens/           (fotos dos produtos, nomeadas por código: 407.png, 123.jpg etc)
-- CARTA/logo_inga.png
-- sugestoes/
-
-Notas:
-- Para .xls, instale xlrd>=2.0.1; para .xlsx, usa openpyxl.
+app_streamlit_final_v2.py
+Correções:
+- As seleções permanecem marcadas mesmo ao mudar filtros (persistência global por idx)
+- "Salvar Sugestão" salva imediatamente pelo nome informado (sem botão extra)
+- Itens cadastrados passam a integrar o DF principal (entram na grade/filtros/exports)
 """
 
 import os
@@ -52,10 +37,11 @@ CARTA_DIR = os.path.join(BASE_DIR, "CARTA")
 LOGO_PADRAO = os.path.join(CARTA_DIR, "logo_inga.png")
 
 CAMPOS_NOVOS = [
-    "cod", "descricao", "visual", "olfato", "gustativo", "premiacoes", "amadurecimento",
-    "regiao", "pais", "vinicola", "corpo", "tipo",
-    "uva1", "uva2", "uva3",
-    "preco38", "preco39", "preco1", "preco2", "preco15", "preco55", "preco63"
+    "idx","cod","descricao","visual","olfato","gustativo","premiacoes","amadurecimento",
+    "regiao","pais","vinicola","corpo","tipo",
+    "uva1","uva2","uva3",
+    "preco38","preco39","preco1","preco2","preco15","preco55","preco63",
+    "preco_base","fator","preco_de_venda"
 ]
 
 TIPO_ORDEM_FIXA = [
@@ -82,29 +68,28 @@ def ler_excel_vinhos(caminho="vinhos1.xls"):
                  "Se possível, converta seu arquivo para .xlsx (openpyxl).")
         raise
     except Exception:
-        # Tenta sem engine como fallback
         df = pd.read_excel(caminho)
     df.columns = [c.strip().lower() for c in df.columns]
+    # Completa colunas esperadas
     for col in CAMPOS_NOVOS:
         if col not in df.columns:
-            df[col] = ""
-    for col in ["preco38", "preco39", "preco1", "preco2", "preco15", "preco55", "preco63"]:
-        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+            df[col] = None
+    # Númericas
+    for col in ["preco38","preco39","preco1","preco2","preco15","preco55","preco63","preco_base","fator","preco_de_venda"]:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
     # Índice original preservado para seleção
-    df = df.reset_index(drop=False).rename(columns={"index": "idx"})
+    if "idx" not in df.columns or df["idx"].isna().all():
+        df = df.reset_index(drop=False).rename(columns={"index": "idx"})
     return df
 
 def get_imagem_file(cod: str):
-    # Compatibilidade com caminho Windows
     caminho_win = os.path.join(r"C:/carta/imagens", f"{cod}.png")
     if os.path.exists(caminho_win):
         return caminho_win
-    # Varre imagens/ por extensões comuns
     for ext in ['.png', '.jpg', '.jpeg', '.PNG', '.JPG', '.JPEG']:
         img_path = os.path.join(IMAGEM_DIR, f"{cod}{ext}")
         if os.path.exists(img_path):
             return os.path.abspath(img_path)
-    # Fallback: qualquer arquivo que comece com o código
     try:
         for fname in os.listdir(IMAGEM_DIR):
             if fname.startswith(str(cod)):
@@ -113,22 +98,19 @@ def get_imagem_file(cod: str):
         pass
     return None
 
-def atualiza_coluna_preco_base(df: pd.DataFrame, flag: str):
+def atualiza_coluna_preco_base(df: pd.DataFrame, flag: str, fator_global: float):
     if flag not in df.columns:
         base = df.get("preco1", 0.0)
     else:
         base = df[flag].fillna(0.0)
     df["preco_base"] = pd.to_numeric(base, errors="coerce").fillna(0.0)
     if "fator" not in df.columns:
-        df["fator"] = 2.0
-    df["fator"] = pd.to_numeric(df["fator"], errors="coerce").fillna(2.0)
+        df["fator"] = fator_global
+    df["fator"] = pd.to_numeric(df["fator"], errors="coerce").fillna(fator_global)
     df["preco_de_venda"] = df["preco_base"] * df["fator"]
     return df
 
 def ordenar_para_saida(df):
-    # Ordena por ordem fixa de tipo, depois país e descrição
-    tipocol = df.get("tipo", pd.Series([""] * len(df))).astype(str)
-    # Normaliza para bater com ordem fixa (capitalização/acentos simples)
     def normaliza_tipo(t):
         t = str(t).strip().lower()
         if "espum" in t: return "Espumantes"
@@ -140,7 +122,7 @@ def ordenar_para_saida(df):
         if "sobrem" in t: return "Vinhos de sobremesa"
         if "licor" in t: return "Licorosos"
         return t.title()
-    tipos_norm = tipocol.map(normaliza_tipo)
+    tipos_norm = df.get("tipo", pd.Series([""]*len(df))).astype(str).map(normaliza_tipo)
     ordem_map = {t: i for i, t in enumerate(TIPO_ORDEM_FIXA)}
     ordem = tipos_norm.map(lambda x: ordem_map.get(x, 999))
     df2 = df.copy()
@@ -156,16 +138,10 @@ def add_pdf_footer(c, contagem, total_rotulos, fator_geral):
     c.line(30, y_rodape+32, width-30, y_rodape+32)
     c.setFont("Helvetica", 5)
     c.drawString(32, y_rodape+20, f"Gerado em: {now}")
-
-    # garante formatação correta do fator
-    if isinstance(fator_geral, (int, float)):
-        fator_str = f"{fator_geral:.2f}"
-    else:
-        try:
-            fator_str = f"{float(fator_geral):.2f}"
-        except Exception:
-            fator_str = str(fator_geral)
-
+    try:
+        fator_str = f"{float(fator_geral):.2f}"
+    except Exception:
+        fator_str = str(fator_geral)
     c.setFont("Helvetica-Bold", 6)
     c.drawString(
         32,
@@ -184,14 +160,11 @@ def gerar_pdf(df, titulo, cliente, inserir_foto, logo_cliente_bytes=None):
     c = canvas.Canvas(buffer, pagesize=A4)
     width, height = A4
 
-    # Logo do cliente (se houver)
     if logo_cliente_bytes:
         try:
             c.drawImage(ImageReader(io.BytesIO(logo_cliente_bytes)), 40, height-60, width=120, height=40, mask='auto')
         except Exception:
             pass
-
-    # Logo Ingá SEMPRE topo direito (se existir)
     if os.path.exists(LOGO_PADRAO):
         try:
             c.drawImage(LOGO_PADRAO, width-80, height-40, width=48, height=24, mask='auto')
@@ -210,21 +183,16 @@ def gerar_pdf(df, titulo, cliente, inserir_foto, logo_cliente_bytes=None):
 
     ordem_geral = 1
     contagem = {'Brancos':0, 'Tintos':0, 'Rosés':0, 'Espumantes':0, 'outros':0}
-
-    tipos = df['tipo'].fillna("").astype(str).tolist()
-    # Usa ordenação fixa para tipos
     df_sorted = ordenar_para_saida(df)
+
     for tipo in df_sorted['tipo'].fillna("").astype(str).unique():
         c.setFont("Helvetica-Bold", 10)
-        c.drawString(x_texto, y, str(tipo).upper())
-        y -= 14
+        c.drawString(x_texto, y, str(tipo).upper()); y -= 14
         for pais in df_sorted[df_sorted['tipo']==tipo]['pais'].dropna().unique():
             c.setFont("Helvetica-Bold", 8)
-            c.drawString(x_texto, y, str(pais).upper())
-            y -= 12
-            grupo = df_sorted[(df_sorted['tipo'] == tipo) & (df_sorted['pais'] == pais)]
+            c.drawString(x_texto, y, str(pais).upper()); y -= 12
+            grupo = df_sorted[(df_sorted['tipo']==tipo) & (df_sorted['pais']==pais)]
             for _, row in grupo.iterrows():
-                # contagem por tipo simples
                 t = str(tipo).lower()
                 if "branc" in t: contagem["Brancos"] += 1
                 elif "tint" in t: contagem["Tintos"] += 1
@@ -233,49 +201,34 @@ def gerar_pdf(df, titulo, cliente, inserir_foto, logo_cliente_bytes=None):
                 else: contagem["outros"] += 1
 
                 c.setFont("Helvetica", 6)
-                codtxt = ""
-                try:
-                    codtxt = f"{int(row['cod'])}"
-                except Exception:
-                    codtxt = str(row.get('cod',""))
+                try: codtxt = f"{int(row['cod'])}"
+                except Exception: codtxt = str(row.get('cod',""))
                 c.drawString(x_texto, y, f"{ordem_geral:02d} ({codtxt})")
                 c.setFont("Helvetica-Bold", 7)
                 c.drawString(x_texto+55, y, str(row['descricao']))
-                # linha inferior com regiao/uva
                 uvas = [str(row.get(f"uva{i}", "")).strip() for i in range(1,4)]
                 uvas = [u for u in uvas if u and u.lower() != "nan"]
                 regiao_str = f"{row.get('pais','')} | {row.get('regiao','')}"
-                if uvas:
-                    regiao_str += f" | {', '.join(uvas)}"
-                c.setFont("Helvetica", 5)
-                c.drawString(x_texto+55, y-10, regiao_str)
+                if uvas: regiao_str += f" | {', '.join(uvas)}"
+                c.setFont("Helvetica", 5); c.drawString(x_texto+55, y-10, regiao_str)
 
                 amad = str(row.get("amadurecimento", ""))
                 if amad and amad.lower() != "nan":
-                    c.setFont("Helvetica", 7)
-                    c.drawString(220, y-7, "🛢️")
+                    c.setFont("Helvetica", 7); c.drawString(220, y-7, "🛢️")
 
-                # preços
                 c.setFont("Helvetica", 5)
-                try:
-                    c.drawRightString(width-120, y, f"(R$ {float(row['preco_base']):.2f})")
-                except Exception:
-                    c.drawRightString(width-120, y, "(R$ -)")
-                try:
-                    c.setFont("Helvetica-Bold", 7)
-                    c.drawRightString(width-40, y, f"R$ {float(row['preco_de_venda']):.2f}")
-                except Exception:
-                    c.drawRightString(width-40, y, "R$ -")
+                try: c.drawRightString(width-120, y, f"(R$ {float(row['preco_base']):.2f})")
+                except Exception: c.drawRightString(width-120, y, "(R$ -)")
+                c.setFont("Helvetica-Bold", 7)
+                try: c.drawRightString(width-40, y, f"R$ {float(row['preco_de_venda']):.2f}")
+                except Exception: c.drawRightString(width-40, y, "R$ -")
 
-                # imagem (opcional)
                 if inserir_foto:
                     imgfile = get_imagem_file(str(row.get('cod','')))
                     if imgfile:
                         try:
-                            c.drawImage(imgfile, x_texto+340, y-2, width=40, height=30, mask='auto')
-                            y -= 28
-                        except Exception:
-                            y -= 20
+                            c.drawImage(imgfile, x_texto+340, y-2, width=40, height=30, mask='auto'); y -= 28
+                        except Exception: y -= 20
                     else:
                         y -= 20
                 else:
@@ -283,122 +236,84 @@ def gerar_pdf(df, titulo, cliente, inserir_foto, logo_cliente_bytes=None):
 
                 ordem_geral += 1
 
-                # quebra de página
                 if y < 100:
                     add_pdf_footer(c, contagem, ordem_geral-1, fator_geral=df.get('fator', pd.Series([0])).median())
                     c.showPage()
                     y = height - 40
-                    # cabeçalhos
                     if logo_cliente_bytes:
-                        try:
-                            c.drawImage(ImageReader(io.BytesIO(logo_cliente_bytes)), 40, height-60, width=120, height=40, mask='auto')
-                        except Exception:
-                            pass
+                        try: c.drawImage(ImageReader(io.BytesIO(logo_cliente_bytes)), 40, height-60, width=120, height=40, mask='auto')
+                        except Exception: pass
                     if os.path.exists(LOGO_PADRAO):
-                        try:
-                            c.drawImage(LOGO_PADRAO, width-80, height-40, width=48, height=24, mask='auto')
-                        except Exception:
-                            pass
-                    c.setFont("Helvetica-Bold", 16)
-                    c.drawCentredString(width/2, y, titulo)
-                    y -= 20
-                    if cliente:
-                        c.setFont("Helvetica", 10)
-                        c.drawCentredString(width/2, y, f"Cliente: {cliente}")
-                        y -= 20
+                        try: c.drawImage(LOGO_PADRAO, width-80, height-40, width=48, height=24, mask='auto')
+                        except Exception: pass
+                    c.setFont("Helvetica-Bold", 16); c.drawCentredString(width/2, y, titulo); y -= 20
+                    if cliente: c.setFont("Helvetica", 10); c.drawCentredString(width/2, y, f"Cliente: {cliente}"); y -= 20
 
     add_pdf_footer(c, contagem, ordem_geral-1, fator_geral=df.get('fator', pd.Series([0])).median())
-    c.save()
-    buffer.seek(0)
+    c.save(); buffer.seek(0)
     return buffer
 
 def exportar_excel_like_pdf(df, inserir_foto=True):
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "Sugestão"
-
-    row_num = 1
-    ordem_geral = 1
-
+    wb = openpyxl.Workbook(); ws = wb.active; ws.title = "Sugestão"
+    row_num = 1; ordem_geral = 1
     df_sorted = ordenar_para_saida(df)
-
     for tipo in df_sorted['tipo'].fillna("").unique():
         ws.merge_cells(start_row=row_num, start_column=1, end_row=row_num, end_column=8)
-        cell = ws.cell(row=row_num, column=1, value=str(tipo).upper())
-        cell.font = Font(bold=True, size=18)
-        row_num += 1
-
+        cell = ws.cell(row=row_num, column=1, value=str(tipo).upper()); cell.font = Font(bold=True, size=18); row_num += 1
         for pais in df_sorted[df_sorted['tipo'] == tipo]['pais'].dropna().unique():
             ws.merge_cells(start_row=row_num, start_column=1, end_row=row_num, end_column=8)
-            cell = ws.cell(row=row_num, column=1, value=str(pais).upper())
-            cell.font = Font(bold=True, size=14)
-            row_num += 1
-
+            cell = ws.cell(row=row_num, column=1, value=str(pais).upper()); cell.font = Font(bold=True, size=14); row_num += 1
             grupo = df_sorted[(df_sorted['tipo'] == tipo) & (df_sorted['pais'] == pais)]
             for _, row in grupo.iterrows():
                 ws.cell(row=row_num, column=1, value=f"{ordem_geral:02d} ({int(row['cod']) if pd.notnull(row['cod']) else ''})").font = Font(size=11)
                 ws.cell(row=row_num, column=2, value=str(row['descricao'])).font = Font(bold=True, size=12)
-
                 if inserir_foto:
                     imgfile = get_imagem_file(str(row.get('cod','')))
                     if imgfile and os.path.exists(imgfile):
                         try:
-                            img = XLImage(imgfile)
-                            img.width, img.height = 32, 24
-                            cell_ref = f"C{row_num}"
-                            ws.add_image(img, cell_ref)
-                        except Exception:
-                            pass
-
+                            img = XLImage(imgfile); img.width, img.height = 32, 24; ws.add_image(img, f"C{row_num}")
+                        except Exception: pass
                 try:
-                    base_val = float(row['preco_base'])
-                    pv_val = float(row['preco_de_venda'])
-                    base_str = f"(R$ {base_val:.2f})"
-                    pv_str = f"R$ {pv_val:.2f}"
+                    base_val = float(row['preco_base']); pv_val = float(row['preco_de_venda'])
+                    base_str = f"(R$ {base_val:.2f})"; pv_str = f"R$ {pv_val:.2f}"
                 except Exception:
-                    base_str = "(R$ -)"
-                    pv_str = "R$ -"
-
-                ws.cell(row=row_num, column=7, value=base_str).alignment = Alignment(horizontal='right')
-                ws.cell(row=row_num, column=7).font = Font(size=10)
-                ws.cell(row=row_num, column=8, value=pv_str).font = Font(bold=True, size=13)
-                ws.cell(row=row_num, column=8).alignment = Alignment(horizontal='right')
-
-                uvas = [str(row.get(f"uva{i}", "")).strip() for i in range(1,4)]
-                uvas = [u for u in uvas if u and u.lower() != "nan"]
-                regiao_str = f"{row.get('pais','')} | {row.get('regiao','')}"
-                if uvas:
-                    regiao_str += f" | {', '.join(uvas)}"
+                    base_str = "(R$ -)"; pv_str = "R$ -"
+                ws.cell(row=row_num, column=7, value=base_str).alignment = Alignment(horizontal='right'); ws.cell(row=row_num, column=7).font = Font(size=10)
+                ws.cell(row=row_num, column=8, value=pv_str).font = Font(bold=True, size=13); ws.cell(row=row_num, column=8).alignment = Alignment(horizontal='right')
+                uvas = [str(row.get(f"uva{i}", "")).strip() for i in range(1,4)]; uvas = [u for u in uvas if u and u.lower() != "nan"]
+                regiao_str = f"{row.get('pais','')} | {row.get('regiao','')}"; 
+                if uvas: regiao_str += f" | {', '.join(uvas)}"
                 ws.cell(row=row_num+1, column=2, value=regiao_str).font = Font(size=10)
                 amad = str(row.get("amadurecimento", ""))
                 if amad and amad.lower() != "nan":
                     ws.cell(row=row_num+1, column=3, value="🛢️").font = Font(size=10)
-
-                row_num += 2
-                ordem_geral += 1
-
+                row_num += 2; ordem_geral += 1
     ws.column_dimensions[get_column_letter(1)].width = 13
     ws.column_dimensions[get_column_letter(2)].width = 45
     ws.column_dimensions[get_column_letter(3)].width = 8
     ws.column_dimensions[get_column_letter(7)].width = 16
     ws.column_dimensions[get_column_letter(8)].width = 16
-
-    stream = io.BytesIO()
-    wb.save(stream)
-    stream.seek(0)
-    return stream
+    stream = io.BytesIO(); wb.save(stream); stream.seek(0); return stream
 
 # ===================== APP =====================
 def main():
     st.set_page_config(page_title="Sugestão de Carta de Vinhos", layout="wide")
     garantir_pastas()
 
-    # Barra de título
+    # Estado base
+    if "selected_idxs" not in st.session_state:
+        st.session_state.selected_idxs = set()
+    if "manual_fat" not in st.session_state:
+        st.session_state.manual_fat = {}
+    if "manual_preco_venda" not in st.session_state:
+        st.session_state.manual_preco_venda = {}
+    if "cadastrados" not in st.session_state:
+        st.session_state.cadastrados = []
+
     st.markdown("### Sugestão de Carta de Vinhos")
 
-    # Top bar (cliente, logo, foto, tabela, busca, fator, reset, arquivo)
     with st.container():
-        c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([1.4,1.2,1,1,1.6,0.9,0.9,1.6])
+        c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([1.4,1.2,1,1,1.6,0.9,1.2,1.6])
         with c1:
             cliente = st.text_input("Nome do Cliente", value="", placeholder="(opcional)", key="cliente_nome")
         with c2:
@@ -421,13 +336,18 @@ def main():
                                              help="Caminho do arquivo XLS/XLSX (ex.: vinhos1.xls)",
                                              key="caminho_planilha")
 
-    # Carregamento dos dados
+    # Carrega DF base
     df = ler_excel_vinhos(caminho_planilha)
-    df = atualiza_coluna_preco_base(df, preco_flag)
+    df = atualiza_coluna_preco_base(df, preco_flag, fator_global=float(fator_global))
 
-    # Aplicação do fator global
-    df["fator"] = float(fator_global)
-    df["preco_de_venda"] = df["preco_base"] * df["fator"]
+    # Integra itens cadastrados na sessão (agora fazem parte do DF principal)
+    if st.session_state.cadastrados:
+        cad_df = pd.DataFrame(st.session_state.cadastrados)
+        # Completa colunas
+        for col in df.columns:
+            if col not in cad_df.columns:
+                cad_df[col] = None
+        df = pd.concat([df, cad_df[df.columns]], ignore_index=True)
 
     # Sidebar de filtros
     st.sidebar.header("Filtros")
@@ -449,15 +369,7 @@ def main():
     with colp2:
         preco_max = st.number_input("Preço máx (base)", min_value=0.0, value=0.0, step=1.0, help="0 = sem limite", key="preco_max")
 
-    # Estado de seleção
-    if "selected_idxs" not in st.session_state:
-        st.session_state.selected_idxs = set()
-    if "manual_fat" not in st.session_state:
-        st.session_state.manual_fat = {}  # idx -> fator
-    if "manual_preco_venda" not in st.session_state:
-        st.session_state.manual_preco_venda = {}  # idx -> pv
-
-    # Aplicar filtros
+    # Aplicar filtros para a VIEW (mas preservar seleções globais)
     df_filtrado = df.copy()
     if termo_global.strip():
         term = termo_global.strip().lower()
@@ -474,12 +386,11 @@ def main():
     if filt_cod:
         df_filtrado = df_filtrado[df_filtrado["cod"].astype(str) == filt_cod]
     if preco_min:
-        df_filtrado = df_filtrado[df_filtrado["preco_base"] >= float(preco_min)]
+        df_filtrado = df_filtrado[df_filtrado["preco_base"].fillna(0) >= float(preco_min)]
     if preco_max and preco_max > 0:
-        df_filtrado = df_filtrado[df_filtrado["preco_base"] <= float(preco_max)]
+        df_filtrado = df_filtrado[df_filtrado["preco_base"].fillna(0) <= float(preco_max)]
 
     if resetar:
-        st.session_state.selected_idxs = set()
         df_filtrado = df.copy()
 
     # Contagem por tipo
@@ -495,17 +406,27 @@ def main():
     selecionados = len(st.session_state.selected_idxs)
     st.caption(f"Brancos: {contagem.get('Brancos', 0)} | Tintos: {contagem.get('Tintos', 0)} | Rosés: {contagem.get('Rosés', 0)} | Espumantes: {contagem.get('Espumantes', 0)} | Total: {total} | Selecionados: {selecionados} | Fator: {float(fator_global):.2f}")
 
-    # Tabela editável (data_editor)
+    # Data editor com colunas e checkbox de seleção (baseado no set global)
+    # Data editor com colunas e checkbox de seleção (baseado no set global)
+    view_df = df_filtrado.copy()
+
+    # Normaliza tipos para evitar erro do Streamlit
+    view_df["idx"] = pd.to_numeric(view_df["idx"], errors="coerce").fillna(-1).astype(int)
+    view_df["cod"] = view_df["cod"].astype(str)
+    view_df["preco_base"] = pd.to_numeric(view_df["preco_base"], errors="coerce").fillna(0.0)
+    view_df["preco_de_venda"] = pd.to_numeric(view_df["preco_de_venda"], errors="coerce").fillna(0.0)
+    view_df["fator"] = pd.to_numeric(view_df["fator"], errors="coerce").fillna(0.0)
+    view_df["selecionado"] = view_df["idx"].apply(lambda i: i in st.session_state.selected_idxs)
+
+    view_df["foto"] = view_df["cod"].apply(lambda c: "●" if get_imagem_file(str(c)) else "")
+
     edited = st.data_editor(
-        df_filtrado.assign(
-            selecionado=lambda d: d["idx"].apply(lambda i: i in st.session_state.selected_idxs),
-            foto=lambda d: d["cod"].apply(lambda c: "●" if get_imagem_file(str(c)) else ""),
-        )[["selecionado","foto","cod","descricao","pais","regiao","preco_base","preco_de_venda","fator","idx"]],
+        view_df[["selecionado","foto","cod","descricao","pais","regiao","preco_base","preco_de_venda","fator","idx"]],
         hide_index=True,
         column_config={
             "selecionado": st.column_config.CheckboxColumn("SELECIONADO"),
             "foto": st.column_config.TextColumn("FOTO"),
-            "cod": st.column_config.NumberColumn("COD"),
+            "cod": st.column_config.TextColumn("COD"),
             "descricao": st.column_config.TextColumn("DESCRICAO"),
             "pais": st.column_config.TextColumn("PAIS"),
             "regiao": st.column_config.TextColumn("REGIAO"),
@@ -519,13 +440,14 @@ def main():
         key="editor_main",
     )
 
-    # Sincroniza seleção/edições com o estado
-    # Selecões
-    new_selected = set(edited.loc[edited["selecionado"]==True, "idx"].astype(int).tolist()) if not edited.empty else set()
-    st.session_state.selected_idxs = new_selected
+    # Atualizar o conjunto global de seleções (preserva selecionados fora do filtro)
+    visible_ids = set(edited["idx"].dropna().astype(int).tolist()) if not edited.empty else set()
+    selected_in_view = set(edited.loc[edited["selecionado"]==True, "idx"].dropna().astype(int).tolist()) if not edited.empty else set()
+    st.session_state.selected_idxs = (st.session_state.selected_idxs - visible_ids) | selected_in_view
 
-    # Ajustes manuais
+    # Ajustes manuais (aplicados no DF base, por idx)
     for _, r in edited.iterrows():
+        if pd.isna(r.get("idx")): continue
         idx = int(r["idx"])
         if pd.notnull(r.get("fator")):
             st.session_state.manual_fat[idx] = float(r["fator"])
@@ -538,8 +460,8 @@ def main():
     for idx, pv in st.session_state.manual_preco_venda.items():
         df.loc[df["idx"]==idx, "preco_de_venda"] = pv
 
-    # Botões
-    cA, cB, cC, cD, cE = st.columns([1,1.2,1.2,1.2,1.2])
+    # Botões de ação + campo de nome da sugestão
+    cA, cB, cC, cD, cE, cF = st.columns([1,1.2,1.2,1.2,1.6,1.2])
     with cA:
         ver_preview = st.button("Visualizar Sugestão", key="btn_preview")
     with cB:
@@ -549,6 +471,8 @@ def main():
     with cD:
         exportar_excel_btn = st.button("Exportar para Excel", key="btn_excel")
     with cE:
+        nome_sugestao = st.text_input("Nome da sugestão", value="", key="nome_sugestao_input")
+    with cF:
         salvar_sugestao_btn = st.button("Salvar Sugestão", key="btn_salvar")
 
     if ver_preview:
@@ -558,7 +482,6 @@ def main():
             st.subheader("Pré-visualização da Sugestão")
             df_sel = df[df["idx"].isin(st.session_state.selected_idxs)].copy()
             df_sel = ordenar_para_saida(df_sel)
-            # Gera preview textual
             preview_lines = []
             preview_lines.append("Sugestão Carta de Vinhos")
             if cliente:
@@ -576,13 +499,10 @@ def main():
                             preco = f"R$ {float(row['preco_base']):.2f}"
                             pvenda = f"R$ {float(row['preco_de_venda']):.2f}"
                         except Exception:
-                            preco = "R$ -"
-                            pvenda = "R$ -"
-                        regiao = row['regiao']
-                        try:
-                            cod = int(row['cod']) if pd.notnull(row['cod']) else ""
-                        except Exception:
-                            cod = str(row.get('cod',""))
+                            preco = "R$ -"; pvenda = "R$ -"
+                        try: cod = int(row['cod']) if pd.notnull(row['cod']) else ""
+                        except Exception: cod = str(row.get('cod',""))
+                        regiao = row.get('regiao',"")
                         preview_lines.append(f"    {ordem_geral:02d} ({cod}) {desc}")
                         uvas = [str(row.get(f"uva{i}", "")).strip() for i in range(1,4)]
                         uvas_str = ", ".join([u for u in uvas if u and u.lower()!='nan'])
@@ -627,8 +547,12 @@ def main():
 
     if salvar_sugestao_btn:
         garantir_pastas()
-        nome = st.text_input("Nome da sugestão para salvar:", value="", key="nome_sugestao")
-        if nome and st.button("Confirmar salvar", key="btn_confirma_salvar"):
+        nome = nome_sugestao.strip()
+        if not nome:
+            st.warning("Informe um nome para a sugestão antes de salvar.")
+        elif not st.session_state.selected_idxs:
+            st.info("Selecione produtos para salvar.")
+        else:
             path = os.path.join(SUGESTOES_DIR, f"{nome}.txt")
             try:
                 with open(path, "w") as f:
@@ -684,6 +608,7 @@ def main():
         with c3b:
             new_preco = st.number_input("Preço", min_value=0.0, value=0.0, step=0.01, key="cad_preco")
         with c4b:
+            # usa o fator global como default
             new_fat = st.number_input("Fator", min_value=0.0, value=float(fator_global), step=0.1, key="cad_fator")
         with c5b:
             new_pv = st.number_input("Preço Venda", min_value=0.0, value=0.0, step=0.01, key="cad_pv")
@@ -696,25 +621,29 @@ def main():
             try:
                 cod_int = int(float(new_cod)) if new_cod else None
                 pv_calc = new_pv if new_pv > 0 else new_preco * new_fat
+                # idx único considerando itens atuais + cadastrados
+                idx_next = 0
+                if "idx" in df.columns and not df["idx"].isna().all():
+                    try:
+                        idx_next = int(pd.to_numeric(df["idx"], errors="coerce").max()) + 1
+                    except Exception:
+                        idx_next = len(df) + 1
                 novo = {
-                    "idx": int(df["idx"].max()+1) if len(df)>0 else 0,
+                    "idx": idx_next,
                     "cod": cod_int,
                     "descricao": new_desc,
-                    "preco_base": new_preco,
-                    "fator": new_fat,
-                    "preco_de_venda": pv_calc,
+                    "preco_base": float(new_preco),
+                    "fator": float(new_fat),
+                    "preco_de_venda": float(pv_calc),
                     "pais": new_pais,
                     "regiao": new_regiao,
                     "tipo": "",
                 }
-                st.session_state.setdefault("cadastrados", [])
-                st.session_state["cadastrados"].append(novo)
-                st.success("Produto cadastrado na sessão atual.")
+                st.session_state.cadastrados.append(novo)
+                st.success("Produto cadastrado na sessão atual. Ele já aparece na grade após o recarregamento.")
+                st.experimental_rerun()
             except Exception as e:
                 st.error(f"Erro ao cadastrar: {e}")
-
-        if st.session_state.get("cadastrados"):
-            st.dataframe(pd.DataFrame(st.session_state["cadastrados"]), use_container_width=True)
 
 if __name__ == "__main__":
     main()

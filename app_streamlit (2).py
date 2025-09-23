@@ -388,6 +388,7 @@ if st.button("Cadastrar"):
 
 
 
+
             try:
                 cod_int = int(float(new_cod)) if new_cod else None
                 pv_calc = new_pv if new_pv > 0 else new_preco * new_fat

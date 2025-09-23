@@ -621,9 +621,9 @@ def main():
         c1, c2, c3, c4, c5, c6, c7 = st.columns([1,2,1,1,1,1,1.2])
         with c1: new_cod = st.text_input("Código")
         with c2: new_desc = st.text_input("Descrição")
-        with c3: new_preco = st.number_input("Preço", min_value=0.0, value=0.0, step=0.01)
-        with c4: new_fat = st.number_input("Fator", min_value=0.0, value=float(fator_global), step=0.1)
-        with c5: new_pv = st.number_input("Preço Venda", min_value=0.0, value=0.0, step=0.01)
+        with c3: new_preco = st.number_input("Preço", min_value=0.0, value=0.0, step=0.01, key="cadastro_preco")
+        with c4: new_fat = st.number_input("Fator", min_value=0.0, value=float(fator_global, key="cadastro_fator"), step=0.1)
+        with c5: new_pv = st.number_input("Preço Venda", min_value=0.0, value=0.0, step=0.01, key="cadastro_preco_venda")
         with c6: new_pais = st.text_input("País")
         with c7: new_regiao = st.text_input("Região")
         if st.button("Cadastrar"):

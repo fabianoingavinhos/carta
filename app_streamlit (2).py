@@ -249,15 +249,26 @@ def add_pdf_footer(c, contagem, total_rotulos, fator_geral):
     c.line(30, y_rodape+32, width-30, y_rodape+32)
     c.setFont("Helvetica", 5)
     c.drawString(32, y_rodape+20, f"Gerado em: {now}")
+
+    # garante formatação correta do fator
+    if isinstance(fator_geral, (int, float)):
+        fator_str = f"{fator_geral:.2f}"
+    else:
+        fator_str = str(fator_geral)
+
     c.setFont("Helvetica-Bold", 6)
-    c.drawString(32, y_rodape+7,
+    c.drawString(
+        32,
+        y_rodape+7,
         f"Brancos: {contagem.get('Brancos',0)} | Tintos: {contagem.get('Tintos',0)} | "
         f"Rosés: {contagem.get('Rosés',0)} | Espumantes: {contagem.get('Espumantes',0)} | "
-        f"Total: {int(total_rotulos)} | Fator: {fator_geral:.2f if isinstance(fator_geral,(int,float)) else fator_geral}")
+        f"Total: {int(total_rotulos)} | Fator: {fator_str}"
+    )
     c.setFont("Helvetica", 5)
     c.drawString(32, y_rodape-5, "Ingá Distribuidora Ltda | CNPJ 05.390.477/0002-25 Rod BR 232, KM 18,5 - S/N- Manassu - CEP 54130-340 Jaboatão")
     c.setFont("Helvetica-Bold", 6)
     c.drawString(width-190, y_rodape-5, "b2b.ingavinhos.com.br")
+
 
 def exportar_excel_like_pdf(df, inserir_foto=True):
     wb = openpyxl.Workbook()

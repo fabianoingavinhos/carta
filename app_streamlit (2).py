@@ -410,7 +410,46 @@ def main():
     # Data editor com colunas e checkbox de seleção (baseado no set global)
     view_df = df_filtrado.copy()
 
-    # --- Normalização robusta de tipos antes do editor ---
+    
+    # --- Normalização robusta + remoção de colunas duplicadas ---
+    if not isinstance(view_df, pd.DataFrame):
+        view_df = pd.DataFrame(view_df)
+
+    # Remove colunas duplicadas mantendo a primeira ocorrência
+    try:
+        view_df = view_df.loc[:, ~view_df.columns.duplicated()].copy()
+    except Exception:
+        pass
+
+    # Garante coluna idx
+    if "idx" not in view_df.columns:
+        view_df = view_df.reset_index(drop=False).rename(columns={"index": "idx"})
+
+    # Se "idx" vier como DataFrame (colunas duplicadas), pega a primeira coluna
+    _idx_col = view_df["idx"]
+    if isinstance(_idx_col, pd.DataFrame):
+        _idx_col = _idx_col.iloc[:, 0]
+
+    view_df["idx"] = pd.to_numeric(_idx_col, errors="coerce").fillna(-1).astype(int)
+
+    # Demais colunas
+    if "cod" in view_df.columns:
+        _cod_col = view_df["cod"]
+        if isinstance(_cod_col, pd.DataFrame):
+            _cod_col = _cod_col.iloc[:, 0]
+        view_df["cod"] = _cod_col.astype(str)
+    else:
+        view_df["cod"] = ""
+
+    for _c in ["preco_base", "preco_de_venda", "fator"]:
+        if _c in view_df.columns:
+            _col = view_df[_c]
+            if isinstance(_col, pd.DataFrame):
+                _col = _col.iloc[:, 0]
+            view_df[_c] = pd.to_numeric(_col, errors="coerce").fillna(0.0)
+        else:
+            view_df[_c] = 0.0
+
     # Garante DataFrame
     if not isinstance(view_df, pd.DataFrame):
         view_df = pd.DataFrame(view_df)

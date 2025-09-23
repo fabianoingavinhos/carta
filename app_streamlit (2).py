@@ -1,16 +1,23 @@
+# Create a new version that applies the user's "melhorias" request:
+# - Use st.multiselect for Tipo (native, fast search)
+# - Group selection in st.expander with per-tipo checkboxes
+# - Incremental selection saved in st.session_state (Adicionar tipo -> lista)
+# - Keep all advanced filters/sorts and mesclagem working from persist3
+from textwrap import dedent
 
+code = dedent(r'''
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 """
-app_streamlit_final_v3_persist3.py
+app_streamlit_final_v3_persist4.py
 
-Adições/Correções:
-- ✅ "Salvar alterações nesta sugestão (mesclar)" funcionando (usa seleção atual e mescla com o arquivo).
-- ✅ Filtros avançados para TODAS as colunas: operadores =, <>, contém, não contém; e para números >, <, >=, <=.
-- ✅ Ordenação multi-nível (asc/desc) em QUALQUER coluna.
-- ✅ Persistência de seleção ao trocar filtros.
-- ✅ preco_de_venda = preco_base * fator com parsing robusto.
+Melhorias aplicadas:
+- st.multiselect nativo para filtro de **Tipo** (rápido, com busca).
+- Agrupamento de seleção por **Tipo** em `st.expander` com checkboxes.
+- Seleção incremental usando `st.session_state["filt_tipos"]` (Adicionar tipo sem perder os anteriores).
+- Mantidas: filtros/ordenações avançadas (todas as colunas), persistência de seleção de produtos por idx,
+  cálculo robusto de preço de venda, e mesclagem de sugestões.
 """
 
 import os
@@ -50,7 +57,6 @@ def garantir_pastas():
         os.makedirs(p, exist_ok=True)
 
 def parse_money_series(s, default=0.0):
-    """Converte série textual com possível separador de milhar '.' e decimal ',' em float."""
     s = s.astype(str).str.replace("\u00A0", "", regex=False).str.strip()
     s = s.str.replace(".", "", regex=False).str.replace(",", ".", regex=False)
     return pd.to_numeric(s, errors="coerce").fillna(default)
@@ -80,17 +86,14 @@ def ler_excel_vinhos(caminho="vinhos1.xls"):
     df.columns = [c.strip().lower() for c in df.columns]
     if "idx" not in df.columns or df["idx"].isna().all():
         df = df.reset_index(drop=False).rename(columns={"index": "idx"})
-    # normaliza tipos
     df["idx"] = pd.to_numeric(df["idx"], errors="coerce").fillna(-1).astype(int)
 
-    # preços e fator: aceitar vírgula
     for col in ["preco38","preco39","preco1","preco2","preco15","preco55","preco63","preco_base","fator","preco_de_venda"]:
         if col not in df.columns:
             df[col] = 0.0
         else:
             df[col] = to_float_series(df[col], default=0.0)
 
-    # textos
     for col in ["cod","descricao","pais","regiao","tipo","uva1","uva2","uva3","amadurecimento","vinicola","corpo","visual","olfato","gustativo","premiacoes"]:
         if col not in df.columns:
             df[col] = ""
@@ -143,12 +146,16 @@ def ordenar_para_saida(df):
     cols_exist = [c for c in ["__tipo_ordem","pais","descricao"] if c in df2.columns]
     return df2.sort_values(cols_exist).drop(columns=["__tipo_ordem"], errors="ignore")
 
-# ============== Filtros Avançados e Ordenação ==============
+# ============== Filtros Avançados e Ordenação (mesmo da v3_persist3) ==============
 def init_rule_states():
     if "filter_rules" not in st.session_state:
-        st.session_state.filter_rules = []  # lista de dicts: {"col":..., "op":..., "val":...}
+        st.session_state.filter_rules = []
     if "sort_rules" not in st.session_state:
-        st.session_state.sort_rules = []    # lista de dicts: {"col":..., "dir": "asc"/"desc"}
+        st.session_state.sort_rules = []
+    if "filt_tipos" not in st.session_state:
+        st.session_state.filt_tipos = []
+    if "filt_tipos_expander" not in st.session_state:
+        st.session_state.filt_tipos_expander = {}
 
 def add_filter_rule(col, op, val):
     if col and op:
@@ -183,8 +190,6 @@ def apply_filter_rules(df):
         if col not in df.columns:
             continue
         series = df[col]
-
-        # tenta numérico
         as_num = pd.to_numeric(series, errors="coerce")
         val_num = pd.to_numeric(pd.Series([val]), errors="coerce").iloc[0]
 
@@ -200,7 +205,6 @@ def apply_filter_rules(df):
             elif op == "<>":
                 cond = series_str.fillna("") != val_str
         else:
-            # operadores numéricos: >, <, >=, <=
             if op == ">":
                 cond = as_num > val_num
             elif op == "<":
@@ -222,7 +226,6 @@ def apply_sort_rules(df):
     if not cols:
         return df
     asc = [True if r["dir"] == "asc" else False for r in st.session_state.sort_rules if r["col"] in df.columns]
-    # para estabilidade, converte colunas numéricas quando possível
     sort_df = df.copy()
     for c in cols:
         try:
@@ -288,17 +291,63 @@ def main():
         cad_df["idx"] = pd.to_numeric(cad_df["idx"], errors="coerce").fillna(-1).astype(int)
         df = pd.concat([df, cad_df[df.columns]], ignore_index=True)
 
-    # Sidebar de filtros simples
+    # Sidebar: Filtros rápidos
     st.sidebar.header("Filtros rápidos")
+
     def options_from(col):
         if col not in df.columns: return [""]
-        return [""] + sorted([x for x in df[col].dropna().astype(str).unique().tolist() if x])
+        return sorted([x for x in df[col].dropna().astype(str).unique().tolist() if x])
 
-    filt_pais  = st.sidebar.selectbox("País", options_from("pais"), index=0, key="filt_pais")
-    filt_tipo  = st.sidebar.selectbox("Tipo", options_from("tipo"), index=0, key="filt_tipo")
-    filt_desc  = st.sidebar.selectbox("Descrição", options_from("descricao"), index=0, key="filt_desc")
-    filt_regiao= st.sidebar.selectbox("Região", options_from("regiao"), index=0, key="filt_regiao")
-    filt_cod   = st.sidebar.selectbox("Código", options_from("cod"), index=0, key="filt_cod")
+    # st.multiselect para TIPOS (rápido, com busca) + persistência incremental
+    tipo_opc = options_from("tipo")
+    # MULTISELECT nativo
+    mult_tipos = st.sidebar.multiselect("Tipos (multi)", tipo_opc, default=st.session_state.get("filt_tipos", []), key="ms_tipos")
+    # garante sincronização com session_state["filt_tipos"]
+    st.session_state.filt_tipos = mult_tipos
+
+    # expander com checkboxes por tipo (alternativa agrupada)
+    with st.sidebar.expander("Selecionar tipos (checkbox por grupo)"):
+        # cria estado interno para cada tipo
+        sel_map = st.session_state.get("filt_tipos_expander", {})
+        new_sel_map = {}
+        for tp in tipo_opc:
+            checked = tp in st.session_state.filt_tipos if tp not in sel_map else sel_map.get(tp, False)
+            new_sel_map[tp] = st.checkbox(tp, value=checked, key=f"chk_tipo_{tp}")
+        st.session_state.filt_tipos_expander = new_sel_map
+
+        # botão para aplicar do expander -> lista final
+        if st.button("Aplicar seleção de tipos"):
+            nova_lista = [tp for tp, val in st.session_state.filt_tipos_expander.items() if val]
+            st.session_state.filt_tipos = nova_lista
+            st.session_state.ms_tipos = nova_lista  # reflete no multiselect
+            st.experimental_rerun()
+
+    # seleção incremental (Adicionar tipo) sem perder os anteriores
+    with st.sidebar.expander("Adicionar tipo (incremental)"):
+        escolha_add = st.selectbox("Adicionar tipo:", [""] + tipo_opc, key="add_tipo_select")
+        if st.button("Adicionar tipo"):
+            if escolha_add and escolha_add not in st.session_state.filt_tipos:
+                st.session_state.filt_tipos.append(escolha_add)
+                st.session_state.ms_tipos = list(st.session_state.filt_tipos)
+                st.success(f"'{escolha_add}' adicionado ao filtro.")
+                st.experimental_rerun()
+        if st.button("Limpar tipos"):
+            st.session_state.filt_tipos = []
+            st.session_state.ms_tipos = []
+            st.session_state.filt_tipos_expander = {}
+            st.info("Filtros de Tipo limpos.")
+            st.experimental_rerun()
+
+    # Outros filtros rápidos (simples) — mantive como selectbox, mas pode virar multiselect se quiser
+    pais_opc = [""] + options_from("pais")
+    regiao_opc = [""] + options_from("regiao")
+    desc_opc = [""] + options_from("descricao")
+    cod_opc = [""] + options_from("cod")
+
+    filt_pais   = st.sidebar.selectbox("País", pais_opc, index=0, key="filt_pais")
+    filt_regiao = st.sidebar.selectbox("Região", regiao_opc, index=0, key="filt_regiao")
+    filt_desc   = st.sidebar.selectbox("Descrição", desc_opc, index=0, key="filt_desc")
+    filt_cod    = st.sidebar.selectbox("Código", cod_opc, index=0, key="filt_cod")
 
     colp1, colp2 = st.sidebar.columns(2)
     with colp1:
@@ -306,14 +355,13 @@ def main():
     with colp2:
         preco_max = st.number_input("Preço máx (base)", min_value=0.0, value=0.0, step=1.0, help="0 = sem limite", key="preco_max")
 
-    # Filtros Avançados
+    # Filtros Avançados/Ordenação (mesmo comportamento da v3_persist3)
     with st.sidebar.expander("Filtros avançados (todas as colunas)", expanded=False):
         cols = df.columns.tolist()
         fc1, fc2, fc3 = st.columns([1.1,0.9,1.2])
         with fc1:
             col_sel = st.selectbox("Coluna", cols, key="adv_col")
         with fc2:
-            # operadores gerais
             ops = ["=", "<>", "contém", "não contém", ">", "<", ">=", "<="]
             op_sel = st.selectbox("Operador", ops, index=2, key="adv_op")
         with fc3:
@@ -338,7 +386,6 @@ def main():
                     remove_filter_rule(i)
                     st.experimental_rerun()
 
-    # Ordenação Avançada
     with st.sidebar.expander("Ordenação (todas as colunas)", expanded=False):
         cols = df.columns.tolist()
         sc1, sc2 = st.columns([1.2,0.8])
@@ -370,10 +417,13 @@ def main():
         term = termo_global.strip().lower()
         mask = df_filtrado.apply(lambda row: term in " ".join(str(v).lower() for v in row.values), axis=1)
         df_filtrado = df_filtrado[mask]
+
+    # aplicar TIPOS (multi) do session_state
+    if st.session_state.filt_tipos:
+        df_filtrado = df_filtrado[df_filtrado["tipo"].astype(str).isin(st.session_state.filt_tipos)]
+
     if filt_pais:
         df_filtrado = df_filtrado[df_filtrado["pais"] == filt_pais]
-    if filt_tipo:
-        df_filtrado = df_filtrado[df_filtrado["tipo"] == filt_tipo]
     if filt_desc:
         df_filtrado = df_filtrado[df_filtrado["descricao"] == filt_desc]
     if filt_regiao:
@@ -385,15 +435,17 @@ def main():
     if preco_max and preco_max > 0:
         df_filtrado = df_filtrado[df_filtrado["preco_base"].fillna(0) <= float(preco_max)]
 
-    # Filtros avançados
+    # Filtros/Ordenações avançadas
     df_filtrado = apply_filter_rules(df_filtrado)
-    # Ordenações avançadas
     df_filtrado = apply_sort_rules(df_filtrado)
 
     if resetar:
         df_filtrado = df.copy()
         clear_filter_rules()
         clear_sort_rules()
+        st.session_state.filt_tipos = []
+        st.session_state.ms_tipos = []
+        st.session_state.filt_tipos_expander = {}
 
     # Contagem por tipo + status seleção
     contagem = {'Brancos': 0, 'Tintos': 0, 'Rosés': 0, 'Espumantes': 0, 'outros': 0}
@@ -486,7 +538,7 @@ def main():
     st.session_state.selected_idxs = global_sel
     st.session_state.prev_view_state = curr_state
 
-    # Ajustes manuais (aplicados no DF base, por idx) + recomputa preco_de_venda
+    # Ajustes manuais + recomputa preco_de_venda
     if isinstance(edited, pd.DataFrame) and not edited.empty:
         for _, r in edited.iterrows():
             try:
@@ -628,20 +680,18 @@ def main():
         sel = st.selectbox("Abrir sugestão", [""] + [a[:-4] for a in arquivos], key="sel_sugestao")
 
         # Ao selecionar, carregar automaticamente e mostrar a RELAÇÃO abaixo
-        sugestao_indices = []
         if sel:
             path = os.path.join(SUGESTOES_DIR, f"{sel}.txt")
             if os.path.exists(path):
                 try:
                     with open(path) as f:
                         sugestao_indices = [int(x) for x in f.read().strip().split(",") if x]
-                    # Carrega a sugestão (substitui seleção atual)
                     st.session_state.selected_idxs = set(sugestao_indices)
                     st.info(f"Sugestão '{sel}' carregada: {len(sugestao_indices)} itens.")
                 except Exception as e:
                     st.error(f"Erro ao carregar '{sel}': {e}")
 
-        # Relação da sugestão (abaixo da seleção)
+        # Relação da sugestão (abaixo)
         if sel:
             st.subheader("Relação da Sugestão")
             df_rel = df[df["idx"].isin(st.session_state.selected_idxs)].copy()
@@ -733,3 +783,10 @@ def main():
 
 if __name__ == "__main__":
     main()
+''')
+
+out_path = "/mnt/data/app_streamlit_final_v3_persist4.py"
+with open(out_path, "w", encoding="utf-8") as f:
+    f.write(code)
+
+out_path

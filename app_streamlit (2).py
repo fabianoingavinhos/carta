@@ -1,23 +1,17 @@
-# Create a new version that applies the user's "melhorias" request:
-# - Use st.multiselect for Tipo (native, fast search)
-# - Group selection in st.expander with per-tipo checkboxes
-# - Incremental selection saved in st.session_state (Adicionar tipo -> lista)
-# - Keep all advanced filters/sorts and mesclagem working from persist3
-from textwrap import dedent
 
-code = dedent(r'''
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 """
-app_streamlit_final_v3_persist4.py
+app_streamlit_final_v3_persist5.py
 
-Melhorias aplicadas:
-- st.multiselect nativo para filtro de **Tipo** (rápido, com busca).
-- Agrupamento de seleção por **Tipo** em `st.expander` com checkboxes.
-- Seleção incremental usando `st.session_state["filt_tipos"]` (Adicionar tipo sem perder os anteriores).
-- Mantidas: filtros/ordenações avançadas (todas as colunas), persistência de seleção de produtos por idx,
-  cálculo robusto de preço de venda, e mesclagem de sugestões.
+Melhorias adicionais:
+- País e Região agora usam o mesmo padrão do Tipo:
+  - st.multiselect (rápido, com busca)
+  - expander com checkboxes por grupo
+  - seleção incremental via session_state (Adicionar/limpar)
+- Mantém filtros/ordenações avançadas, persistência da seleção de itens,
+  mesclagem de sugestões e cálculo robusto do preço de venda.
 """
 
 import os
@@ -146,16 +140,27 @@ def ordenar_para_saida(df):
     cols_exist = [c for c in ["__tipo_ordem","pais","descricao"] if c in df2.columns]
     return df2.sort_values(cols_exist).drop(columns=["__tipo_ordem"], errors="ignore")
 
-# ============== Filtros Avançados e Ordenação (mesmo da v3_persist3) ==============
+# ============== Filtros Avançados e Ordenação ==============
 def init_rule_states():
     if "filter_rules" not in st.session_state:
         st.session_state.filter_rules = []
     if "sort_rules" not in st.session_state:
         st.session_state.sort_rules = []
+    # Tipos
     if "filt_tipos" not in st.session_state:
         st.session_state.filt_tipos = []
     if "filt_tipos_expander" not in st.session_state:
         st.session_state.filt_tipos_expander = {}
+    # Países
+    if "filt_paises" not in st.session_state:
+        st.session_state.filt_paises = []
+    if "filt_paises_expander" not in st.session_state:
+        st.session_state.filt_paises_expander = {}
+    # Regiões
+    if "filt_regioes" not in st.session_state:
+        st.session_state.filt_regioes = []
+    if "filt_regioes_expander" not in st.session_state:
+        st.session_state.filt_regioes_expander = {}
 
 def add_filter_rule(col, op, val):
     if col and op:
@@ -295,34 +300,28 @@ def main():
     st.sidebar.header("Filtros rápidos")
 
     def options_from(col):
-        if col not in df.columns: return [""]
+        if col not in df.columns: return []
         return sorted([x for x in df[col].dropna().astype(str).unique().tolist() if x])
 
-    # st.multiselect para TIPOS (rápido, com busca) + persistência incremental
+    # ====== TIPO (multiselect, expander, incremental) ======
     tipo_opc = options_from("tipo")
-    # MULTISELECT nativo
     mult_tipos = st.sidebar.multiselect("Tipos (multi)", tipo_opc, default=st.session_state.get("filt_tipos", []), key="ms_tipos")
-    # garante sincronização com session_state["filt_tipos"]
     st.session_state.filt_tipos = mult_tipos
 
-    # expander com checkboxes por tipo (alternativa agrupada)
     with st.sidebar.expander("Selecionar tipos (checkbox por grupo)"):
-        # cria estado interno para cada tipo
         sel_map = st.session_state.get("filt_tipos_expander", {})
         new_sel_map = {}
         for tp in tipo_opc:
-            checked = tp in st.session_state.filt_tipos if tp not in sel_map else sel_map.get(tp, False)
+            checked = (tp in st.session_state.filt_tipos) if tp not in sel_map else sel_map.get(tp, False)
             new_sel_map[tp] = st.checkbox(tp, value=checked, key=f"chk_tipo_{tp}")
         st.session_state.filt_tipos_expander = new_sel_map
 
-        # botão para aplicar do expander -> lista final
         if st.button("Aplicar seleção de tipos"):
             nova_lista = [tp for tp, val in st.session_state.filt_tipos_expander.items() if val]
             st.session_state.filt_tipos = nova_lista
-            st.session_state.ms_tipos = nova_lista  # reflete no multiselect
+            st.session_state.ms_tipos = nova_lista
             st.experimental_rerun()
 
-    # seleção incremental (Adicionar tipo) sem perder os anteriores
     with st.sidebar.expander("Adicionar tipo (incremental)"):
         escolha_add = st.selectbox("Adicionar tipo:", [""] + tipo_opc, key="add_tipo_select")
         if st.button("Adicionar tipo"):
@@ -338,16 +337,79 @@ def main():
             st.info("Filtros de Tipo limpos.")
             st.experimental_rerun()
 
-    # Outros filtros rápidos (simples) — mantive como selectbox, mas pode virar multiselect se quiser
-    pais_opc = [""] + options_from("pais")
-    regiao_opc = [""] + options_from("regiao")
+    # ====== PAÍS (multiselect, expander, incremental) ======
+    pais_opc = options_from("pais")
+    mult_paises = st.sidebar.multiselect("País (multi)", pais_opc, default=st.session_state.get("filt_paises", []), key="ms_paises")
+    st.session_state.filt_paises = mult_paises
+
+    with st.sidebar.expander("Selecionar países (checkbox por grupo)"):
+        sel_map_p = st.session_state.get("filt_paises_expander", {})
+        new_sel_map_p = {}
+        for pv in pais_opc:
+            checked = (pv in st.session_state.filt_paises) if pv not in sel_map_p else sel_map_p.get(pv, False)
+            new_sel_map_p[pv] = st.checkbox(pv, value=checked, key=f"chk_pais_{pv}")
+        st.session_state.filt_paises_expander = new_sel_map_p
+
+        if st.button("Aplicar seleção de países"):
+            nova_lista = [pv for pv, val in st.session_state.filt_paises_expander.items() if val]
+            st.session_state.filt_paises = nova_lista
+            st.session_state.ms_paises = nova_lista
+            st.experimental_rerun()
+
+    with st.sidebar.expander("Adicionar país (incremental)"):
+        escolha_p = st.selectbox("Adicionar país:", [""] + pais_opc, key="add_pais_select")
+        if st.button("Adicionar país"):
+            if escolha_p and escolha_p not in st.session_state.filt_paises:
+                st.session_state.filt_paises.append(escolha_p)
+                st.session_state.ms_paises = list(st.session_state.filt_paises)
+                st.success(f"'{escolha_p}' adicionado ao filtro.")
+                st.experimental_rerun()
+        if st.button("Limpar países"):
+            st.session_state.filt_paises = []
+            st.session_state.ms_paises = []
+            st.session_state.filt_paises_expander = {}
+            st.info("Filtros de País limpos.")
+            st.experimental_rerun()
+
+    # ====== REGIÃO (multiselect, expander, incremental) ======
+    regiao_opc = options_from("regiao")
+    mult_regioes = st.sidebar.multiselect("Região (multi)", regiao_opc, default=st.session_state.get("filt_regioes", []), key="ms_regioes")
+    st.session_state.filt_regioes = mult_regioes
+
+    with st.sidebar.expander("Selecionar regiões (checkbox por grupo)"):
+        sel_map_r = st.session_state.get("filt_regioes_expander", {})
+        new_sel_map_r = {}
+        for rv in regiao_opc:
+            checked = (rv in st.session_state.filt_regioes) if rv not in sel_map_r else sel_map_r.get(rv, False)
+            new_sel_map_r[rv] = st.checkbox(rv, value=checked, key=f"chk_regiao_{rv}")
+        st.session_state.filt_regioes_expander = new_sel_map_r
+
+        if st.button("Aplicar seleção de regiões"):
+            nova_lista = [rv for rv, val in st.session_state.filt_regioes_expander.items() if val]
+            st.session_state.filt_regioes = nova_lista
+            st.session_state.ms_regioes = nova_lista
+            st.experimental_rerun()
+
+    with st.sidebar.expander("Adicionar região (incremental)"):
+        escolha_r = st.selectbox("Adicionar região:", [""] + regiao_opc, key="add_regiao_select")
+        if st.button("Adicionar região"):
+            if escolha_r and escolha_r not in st.session_state.filt_regioes:
+                st.session_state.filt_regioes.append(escolha_r)
+                st.session_state.ms_regioes = list(st.session_state.filt_regioes)
+                st.success(f"'{escolha_r}' adicionado ao filtro.")
+                st.experimental_rerun()
+        if st.button("Limpar regiões"):
+            st.session_state.filt_regioes = []
+            st.session_state.ms_regioes = []
+            st.session_state.filt_regioes_expander = {}
+            st.info("Filtros de Região limpos.")
+            st.experimental_rerun()
+
+    # ====== Descrição e Código (simples) ======
     desc_opc = [""] + options_from("descricao")
     cod_opc = [""] + options_from("cod")
-
-    filt_pais   = st.sidebar.selectbox("País", pais_opc, index=0, key="filt_pais")
-    filt_regiao = st.sidebar.selectbox("Região", regiao_opc, index=0, key="filt_regiao")
-    filt_desc   = st.sidebar.selectbox("Descrição", desc_opc, index=0, key="filt_desc")
-    filt_cod    = st.sidebar.selectbox("Código", cod_opc, index=0, key="filt_cod")
+    filt_desc = st.sidebar.selectbox("Descrição", desc_opc, index=0, key="filt_desc")
+    filt_cod  = st.sidebar.selectbox("Código", cod_opc, index=0, key="filt_cod")
 
     colp1, colp2 = st.sidebar.columns(2)
     with colp1:
@@ -355,7 +417,7 @@ def main():
     with colp2:
         preco_max = st.number_input("Preço máx (base)", min_value=0.0, value=0.0, step=1.0, help="0 = sem limite", key="preco_max")
 
-    # Filtros Avançados/Ordenação (mesmo comportamento da v3_persist3)
+    # Filtros Avançados
     with st.sidebar.expander("Filtros avançados (todas as colunas)", expanded=False):
         cols = df.columns.tolist()
         fc1, fc2, fc3 = st.columns([1.1,0.9,1.2])
@@ -386,6 +448,7 @@ def main():
                     remove_filter_rule(i)
                     st.experimental_rerun()
 
+    # Ordenação
     with st.sidebar.expander("Ordenação (todas as colunas)", expanded=False):
         cols = df.columns.tolist()
         sc1, sc2 = st.columns([1.2,0.8])
@@ -418,16 +481,18 @@ def main():
         mask = df_filtrado.apply(lambda row: term in " ".join(str(v).lower() for v in row.values), axis=1)
         df_filtrado = df_filtrado[mask]
 
-    # aplicar TIPOS (multi) do session_state
+    # TIPOS
     if st.session_state.filt_tipos:
         df_filtrado = df_filtrado[df_filtrado["tipo"].astype(str).isin(st.session_state.filt_tipos)]
+    # PAÍSES
+    if st.session_state.filt_paises:
+        df_filtrado = df_filtrado[df_filtrado["pais"].astype(str).isin(st.session_state.filt_paises)]
+    # REGIÕES
+    if st.session_state.filt_regioes:
+        df_filtrado = df_filtrado[df_filtrado["regiao"].astype(str).isin(st.session_state.filt_regioes)]
 
-    if filt_pais:
-        df_filtrado = df_filtrado[df_filtrado["pais"] == filt_pais]
     if filt_desc:
         df_filtrado = df_filtrado[df_filtrado["descricao"] == filt_desc]
-    if filt_regiao:
-        df_filtrado = df_filtrado[df_filtrado["regiao"] == filt_regiao]
     if filt_cod:
         df_filtrado = df_filtrado[df_filtrado["cod"].astype(str) == filt_cod]
     if preco_min:
@@ -443,9 +508,14 @@ def main():
         df_filtrado = df.copy()
         clear_filter_rules()
         clear_sort_rules()
-        st.session_state.filt_tipos = []
-        st.session_state.ms_tipos = []
-        st.session_state.filt_tipos_expander = {}
+        # limpa listas & mapas de seleção múltipla
+        for k in ["filt_tipos","filt_paises","filt_regioes"]:
+            st.session_state[k] = []
+        for k in ["ms_tipos","ms_paises","ms_regioes"]:
+            st.session_state[k] = []
+        for k in ["filt_tipos_expander","filt_paises_expander","filt_regioes_expander"]:
+            st.session_state[k] = {}
+        st.experimental_rerun()
 
     # Contagem por tipo + status seleção
     contagem = {'Brancos': 0, 'Tintos': 0, 'Rosés': 0, 'Espumantes': 0, 'outros': 0}
@@ -783,10 +853,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-''')
-
-out_path = "/mnt/data/app_streamlit_final_v3_persist4.py"
-with open(out_path, "w", encoding="utf-8") as f:
-    f.write(code)
-
-out_path
